@@ -2,11 +2,13 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using Microsoft.Build.Execution;
 using Microsoft.Build.Framework;
+using Microsoft.Build.Framework.Profiler;
 
 namespace Microsoft.Build.Logging.StructuredLogger
 {
@@ -223,9 +225,9 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public void TargetStarted(object sender, TargetStartedEventArgs args)
         {
             TargetBuiltReason targetBuiltReason = TargetBuiltReason.None;
-            if (args is TargetStartedEventArgs2 args2)
+            if (args is TargetStartedEventArgs targetStartedArgs)
             {
-                targetBuiltReason = args2.BuildReason;
+                targetBuiltReason = targetStartedArgs.BuildReason;
             }
 
             AddTargetCore(
@@ -708,10 +710,17 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 project.StartTime = args.Timestamp;
                 project.Name = Intern(args.Message);
                 project.ProjectFile = Intern(args.ProjectFile);
+                project.EntryTargets = string.IsNullOrWhiteSpace(args.TargetNames)
+                    ? ImmutableArray<string>.Empty
+                    : stringTable.InternList(TextUtilities.SplitSemicolonDelimitedList(args.TargetNames));
+
+                var internedGlobalProperties = stringTable.InternStringDictionary(args.GlobalProperties) ?? ImmutableDictionary<string, string>.Empty;
+
+                project.GlobalProperties = internedGlobalProperties;
 
                 if (args.GlobalProperties != null)
                 {
-                    AddGlobalProperties(project, args.GlobalProperties);
+                    AddGlobalProperties(project, internedGlobalProperties);
                 }
 
                 if (args.Properties != null)
