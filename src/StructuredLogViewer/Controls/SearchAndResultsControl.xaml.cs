@@ -28,7 +28,7 @@ namespace StructuredLogViewer.Controls
         public event Action WatermarkDisplayed;
         public event Action<string> TextChanged;
 
-        public Func<string, int, object> ExecuteSearch
+        public ExecuteSearchFunc ExecuteSearch
         {
             get => typingConcurrentOperation.ExecuteSearch;
             set => typingConcurrentOperation.ExecuteSearch = value;
@@ -36,7 +36,7 @@ namespace StructuredLogViewer.Controls
 
         public void TriggerSearch(string text, int maxResults)
         {
-            typingConcurrentOperation.TextChanged(text, maxResults);
+            typingConcurrentOperation.TriggerSearch(text, maxResults);
         }
 
         private void searchTextBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -59,7 +59,7 @@ namespace StructuredLogViewer.Controls
                 return;
             }
 
-            typingConcurrentOperation.TextChanged(searchText);
+            typingConcurrentOperation.TextChanged(searchText, Search.DefaultMaxResults);
         }
 
         private void DisplaySearchResults(object results, bool moreAvailable = false)
@@ -74,8 +74,11 @@ namespace StructuredLogViewer.Controls
         {
             if ((content == null || !content.OfType<object>().Any()) && WatermarkContent != null)
             {
-                watermark.Visibility = Visibility.Visible;
-                WatermarkDisplayed?.Invoke();
+                if (watermark.Visibility != Visibility.Visible)
+                {
+                    watermark.Visibility = Visibility.Visible;
+                    WatermarkDisplayed?.Invoke();
+                }
             }
             else
             {

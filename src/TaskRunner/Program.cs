@@ -2,11 +2,13 @@
 using System.Diagnostics;
 using System.IO;
 using Microsoft.Build.Logging.StructuredLogger;
+using StructuredLogViewer;
 
 namespace TaskRunner
 {
     class Program
     {
+        [STAThread]
         static void Main(string[] args)
         {
             if (args.Length < 2 || args.Length > 4)
@@ -76,7 +78,15 @@ namespace TaskRunner
 
         private void Run(string binlog, int index, string taskName)
         {
+            Construction.ParentAllTargetsUnderProject = SettingsService.ParentAllTargetsUnderProject;
+
             var build = Serialization.Read(binlog);
+
+            // Need to analyze build here to fully emulate what the viewer does when opening a .binlog.
+            // Since the analyzers will mutate the tree it affects indices of TimedNodes. To properly 
+            // calculate the right index we need to have the same tree as in the viewer.
+            BuildAnalyzer.AnalyzeBuild(build);
+
             Task task = null;
             if (index > -1)
             {

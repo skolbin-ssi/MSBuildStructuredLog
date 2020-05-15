@@ -32,16 +32,17 @@ namespace Microsoft.Build.Logging.StructuredLogger
         private readonly MessageProcessor messageProcessor;
         private readonly StringCache stringTable;
 
-        private Folder evaluationFolder;
+        private NamedNode evaluationFolder;
 
-        public Folder EvaluationFolder
+        public NamedNode EvaluationFolder
         {
             get
             {
                 if (evaluationFolder == null)
                 {
-                    evaluationFolder = Build.GetOrCreateNodeWithName<Folder>(Intern("Evaluation"));
+                    evaluationFolder = Build.GetOrCreateNodeWithName<TimedNode>(Intern(Strings.Evaluation));
                 }
+
                 return evaluationFolder;
             }
         }
@@ -63,8 +64,11 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 lock (syncLock)
                 {
                     Build.StartTime = args.Timestamp;
-                    var properties = Build.GetOrCreateNodeWithName<Folder>(Intern("Environment"));
+                    var properties = Build.GetOrCreateNodeWithName<Folder>(Intern(Strings.Environment));
                     AddProperties(properties, args.BuildEnvironment);
+
+                    // realize the evaluation folder now so it is ordered before the main solution node
+                    _ = EvaluationFolder;
                 }
             }
             catch (Exception ex)
@@ -177,7 +181,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                         int parentTaskId = parentContext.TaskId;
                         if (parentProject != null && parentTaskId > 0)
                         {
-                            parentNode = parentProject.FindFirstDescendant<Task>(t => t.Id == parentTaskId);
+                            parentNode = parentProject.FindFirstDescendant<Task>(t => t.Id == parentTaskId && t.GetNearestParent<Project>().Id == parentProjectId);
                         }
                     }
 
@@ -292,7 +296,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
                     if (args.TargetOutputs != null)
                     {
-                        var targetOutputsFolder = target.GetOrCreateNodeWithName<Folder>(Intern("TargetOutputs"));
+                        var targetOutputsFolder = target.GetOrCreateNodeWithName<Folder>(Intern(Strings.TargetOutputs));
 
                         foreach (ITaskItem targetOutput in args.TargetOutputs)
                         {
@@ -333,6 +337,8 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 lock (syncLock)
                 {
+                    Build.Statistics.Tasks++;
+
                     var project = GetOrAddProject(args.BuildEventContext.ProjectContextId);
                     var target = project.GetTargetById(args.BuildEventContext.TargetId);
 
@@ -371,23 +377,9 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 lock (syncLock)
                 {
-                    if (args.GetType().Name == "TargetSkippedEventArgs")
+                    if (args is TargetSkippedEventArgs targetSkipped)
                     {
-                        if (args is TargetSkippedEventArgs targetSkipped)
-                        {
-                            TargetSkipped(targetSkipped);
-                        }
-                        else
-                        {
-                            targetSkipped = new TargetSkippedEventArgs();
-                            targetSkipped.BuildEventContext = args.BuildEventContext;
-                            targetSkipped.TargetName = Intern(Reflector.GetTargetNameFromTargetSkipped(args));
-                            targetSkipped.TargetFile = Intern(Reflector.GetTargetFileFromTargetSkipped(args));
-                            targetSkipped.ParentTarget = Intern(Reflector.GetParentTargetFromTargetSkipped(args));
-                            targetSkipped.BuildReason = Reflector.GetBuildReasonFromTargetSkipped(args);
-                            TargetSkipped(targetSkipped);
-                        }
-
+                        TargetSkipped(targetSkipped);
                         return;
                     }
 
@@ -428,7 +420,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     // This happens when we consume args created by us (deserialized)
                     if (e is ProjectEvaluationStartedEventArgs projectEvaluationStarted)
                     {
-                        var evaluationId = Reflector.GetEvaluationId(projectEvaluationStarted.BuildEventContext);
+                        var evaluationId = projectEvaluationStarted.BuildEventContext.EvaluationId;
                         var projectName = Intern(projectEvaluationStarted.ProjectFile);
                         var nodeName = Intern(GetEvaluationProjectName(evaluationId, projectName));
                         var projectEvaluation = EvaluationFolder.GetOrCreateNodeWithName<ProjectEvaluation>(nodeName);
@@ -437,8 +429,8 @@ namespace Microsoft.Build.Logging.StructuredLogger
                             projectEvaluation.ProjectFile = projectName;
                         }
 
-                        // we stash the evaluation Id as a negative ProjectContextId
                         projectEvaluation.Id = evaluationId;
+                        projectEvaluation.NodeId = e.BuildEventContext.NodeId;
                     }
                     else if (e is ProjectEvaluationFinishedEventArgs projectEvaluationFinished)
                     {
@@ -446,23 +438,10 @@ namespace Microsoft.Build.Logging.StructuredLogger
                         var profilerResult = projectEvaluationFinished.ProfilerResult;
                         if (profilerResult != null && projectName != null)
                         {
-                            var evaluationId = Reflector.GetEvaluationId(projectEvaluationFinished.BuildEventContext);
+                            var evaluationId = projectEvaluationFinished.BuildEventContext.EvaluationId;
                             var nodeName = Intern(GetEvaluationProjectName(evaluationId, projectName));
                             var projectEvaluation = EvaluationFolder.GetOrCreateNodeWithName<ProjectEvaluation>(nodeName);
                             ConstructProfilerResult(projectEvaluation, profilerResult.Value);
-                        }
-                    }
-                    // this happens during live build using MSBuild 15.3 or newer
-                    else if (e.GetType().Name == "ProjectEvaluationStartedEventArgs")
-                    {
-                        var projectName = Intern(TextUtilities.ParseQuotedSubstring(e.Message));
-                        var evaluationId = Reflector.GetEvaluationId(e.BuildEventContext);
-                        var nodeName = Intern(GetEvaluationProjectName(evaluationId, projectName));
-                        var projectEvaluation = EvaluationFolder.GetOrCreateNodeWithName<ProjectEvaluation>(nodeName);
-                        projectEvaluation.Id = Reflector.GetEvaluationId(e.BuildEventContext);
-                        if (projectEvaluation.ProjectFile == null)
-                        {
-                            projectEvaluation.ProjectFile = projectName;
                         }
                     }
                 }
@@ -823,10 +802,36 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 .GetValue(instance);
         }
 
+        private bool IgnoreAssembly(string taskName)
+        {
+            switch (taskName)
+            {
+                case "AssignTargetPath":
+                case "CallTarget":
+                case "Copy":
+                case "Delete":
+                case "FindUnderPath":
+                case "MakeDir":
+                case "Message":
+                case "MSBuild":
+                case "ReadLinesFromFile":
+                case "WriteLinesToFile":
+                    return true;
+            }
+
+            return false;
+        }
+
         private Task CreateTask(TaskStartedEventArgs taskStartedEventArgs)
         {
             var taskName = Intern(taskStartedEventArgs.TaskName);
-            var assembly = Intern(GetTaskAssembly(taskName));
+
+            string assembly = null;
+            if (!IgnoreAssembly(taskName))
+            {
+                assembly = Intern(GetTaskAssembly(taskName));
+            }
+
             var taskId = taskStartedEventArgs.BuildEventContext.TaskId;
             var startTime = taskStartedEventArgs.Timestamp;
 

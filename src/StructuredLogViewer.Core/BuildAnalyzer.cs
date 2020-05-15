@@ -79,10 +79,6 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     {
                         Visit(childNode);
                     }
-                    else
-                    {
-                        ProcessTerminalNode(child);
-                    }
                 }
             }
 
@@ -110,7 +106,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 AnalyzeMessage(message);
             }
-            else if (node is Folder folder)
+            else if (node is NamedNode folder)
             {
                 if (folder.Name == "Evaluation")
                 {
@@ -204,10 +200,6 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     project.IsLowRelevance = true;
                 }
             }
-        }
-
-        private void ProcessTerminalNode(object instance)
-        {
         }
 
         private void AnalyzeTask(Task task)

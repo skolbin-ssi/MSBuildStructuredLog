@@ -38,12 +38,16 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static string TotalAnalyzerExecutionTime => "Total analyzer execution time:";
 
         public static string Evaluation => "Evaluation";
+        public static string Environment => "Environment";
         public static string Imports => "Imports";
         public static string DetailedSummary => "Detailed summary";
         public static string Parameters => "Parameters";
         public static string Results => "Results";
         public static string SearchPaths => "SearchPaths";
         public static string Assemblies => "Assemblies";
+        public static string TargetOutputs => "TargetOutputs";
+        public static string AnalyzerReport => "Analyzer Report";
+        public static string Properties => "Properties";
 
         public static Regex UsingTaskRegex = new Regex("Using \"(?<task>.+)\" task from (assembly|the task factory) \"(?<assembly>.+)\"\\.", RegexOptions.Compiled);
 
@@ -51,6 +55,8 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static Regex ImportingProjectRegex = new Regex(
             @"^Importing project ""(?<ImportedProject>[^\""]+)"" into project ""(?<File>[^\""]+)"" at \((?<Line>\d+),(?<Column>\d+)\)\.$", RegexOptions.Compiled);
         public static Regex ProjectWasNotImportedRegex = new Regex(@"^Project ""(?<ImportedProject>[^""]+)"" was not imported by ""(?<File>[^""]+)"" at \((?<Line>\d+),(?<Column>\d+)\), due to (?<Reason>.+)$", RegexOptions.Compiled);
+
+        public static string GetPropertyName(string message) => message.Substring(message.IndexOf("$") + 2, message.IndexOf("=") - message.IndexOf("$") - 3);
 
         public static bool IsTaskSkipped(string message) => message.StartsWith("Task") && message.Contains("skipped");
         public static bool IsTargetSkipped(string message) => message.StartsWith("Target") && message.Contains("skipped");
@@ -61,10 +67,14 @@ namespace Microsoft.Build.Logging.StructuredLogger
             return message.StartsWith("Search paths being used")
                 || message.StartsWith("Overriding target")
                 || message.StartsWith("Trying to import")
-                || message.StartsWith("Property reassignment")
                 || message.StartsWith("Importing project")
                 || message.Contains("cannot be imported again.")
                 || (message.StartsWith("Project \"") && message.Contains("was not imported by"));
+        }
+
+        public static bool IsPropertyReassignmentMessage(string message)
+        {
+            return message.StartsWith("Property reassignment");                
         }
     }
 }

@@ -62,7 +62,7 @@ namespace StructuredLogViewer.Core.ProjectGraph
 
             var commonGlobalProperties = ComputeCommonGlobalProperties(runtimeGraph);
 
-            var graph = new Graph {Attr = {LayerSeparation = 100}};
+            var graph = new Graph { Attr = { LayerSeparation = 100 } };
 
             foreach (var root in runtimeGraph.SortedRoots)
             {
@@ -149,7 +149,12 @@ namespace StructuredLogViewer.Core.ProjectGraph
             // solution nodes are not a good template for common global properties because they set many verbose global properties on their references
             var meaningfulNodes = runtimeGraph.Nodes.Where(n => !n.Project.ProjectFile.EndsWith(".sln")).ToArray();
 
-            var templateNode = meaningfulNodes.First();
+            var templateNode = meaningfulNodes.FirstOrDefault();
+
+            if (templateNode?.Project.GlobalProperties == null || templateNode.Project.GlobalProperties.Count == 0)
+            {
+                return ImmutableDictionary<string, string>.Empty;
+            }
 
             foreach (var globalProperty in templateNode.Project.GlobalProperties)
             {

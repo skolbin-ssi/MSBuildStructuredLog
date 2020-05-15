@@ -1,24 +1,18 @@
 ﻿using System;
+using System.Collections.Generic;
 using Microsoft.Build.Logging.StructuredLogger;
 
 namespace StructuredLogViewer
 {
     public class SearchResult
     {
-        public object Node { get; set; }
+        public BaseNode Node { get; }
+        public List<(string field, string match)> WordsInFields = new List<(string, string)>();
 
-        public string Field { get; set; }
-        public string Word { get; set; }
-        public int Index { get; set; }
-
-        public string Before { get; set; }
-        public string Highlighted { get; set; }
-        public string After { get; set; }
         public bool MatchedByType { get; private set; }
-
         public TimeSpan Duration { get; set; }
 
-        public SearchResult(object node, bool includeDuration = false)
+        public SearchResult(BaseNode node, bool includeDuration = false)
         {
             Node = node;
             if (includeDuration && node is TimedNode timedNode)
@@ -27,36 +21,16 @@ namespace StructuredLogViewer
             }
         }
 
-        public void AddMatch(string field, string word, int index)
+        public void AddMatch(string field, string word, bool addAtBeginning = false)
         {
-            if (Field != null && Word != null)
+            if (addAtBeginning)
             {
-                return;
+                WordsInFields.Insert(0, (field, word));
             }
-
-            Field = field;
-            Word = word;
-            Index = index;
-
-            if (Field.Length > Microsoft.Build.Logging.StructuredLogger.TextUtilities.MaxDisplayedValueLength || Field.Contains("\n"))
+            else
             {
-                field = Microsoft.Build.Logging.StructuredLogger.TextUtilities.ShortenValue(field, "...");
-                if (index + word.Length < field.Length)
-                {
-                    Before = field.Substring(0, index);
-                    Highlighted = field.Substring(index, word.Length);
-                    After = field.Substring(index + word.Length, field.Length - index - word.Length);
-                }
-                else
-                {
-                    Before = field;
-                    return;
-                }
+                WordsInFields.Add((field, word));
             }
-
-            Before = field.Substring(0, index);
-            Highlighted = field.Substring(index, word.Length);
-            After = field.Substring(index + word.Length, field.Length - index - word.Length);
         }
 
         public void AddMatchByNodeType()

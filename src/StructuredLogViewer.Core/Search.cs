@@ -1,7 +1,7 @@
 ﻿using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using Microsoft.Build.Logging.StructuredLogger;
+using TPLTask = System.Threading.Tasks.Task;
 
 namespace StructuredLogViewer
 {
@@ -11,30 +11,32 @@ namespace StructuredLogViewer
 
         private readonly Build build;
         private readonly int maxResults;
-        private List<SearchResult> resultSet;
+        private int resultCount;
+        private bool markResultsInTree = false;
 
-        public Search(Build build, int maxResults = DefaultMaxResults)
+        public Search(Build build, int maxResults)
         {
             this.build = build;
             this.maxResults = maxResults;
+            this.markResultsInTree = SettingsService.MarkResultsInTree;
         }
 
-        public IEnumerable<SearchResult> FindNodes(string query)
+        public IEnumerable<SearchResult> FindNodes(string query, CancellationToken cancellationToken)
         {
             var matcher = new NodeQueryMatcher(query, build.StringTable.Instances);
 
-            resultSet = new List<SearchResult>();
-
-            var cts = new CancellationTokenSource();
-            build.VisitAllChildren<object>(node => Visit(node, matcher, cts), cts.Token);
-
-            MarkSearchResults(build, resultSet.Select(i => i.Node).OfType<BaseNode>());
-
+            var resultSet = new List<SearchResult>();
+            Visit(build, matcher, resultSet, cancellationToken);
             return resultSet;
         }
 
         public static void ClearSearchResults(Build build)
         {
+            if (!SettingsService.MarkResultsInTree)
+            {
+                return;
+            }
+
             build.VisitAllChildren<BaseNode>(node =>
             {
                 node.IsSearchResult = false;
@@ -42,45 +44,86 @@ namespace StructuredLogViewer
             });
         }
 
-        private void Visit(object node, NodeQueryMatcher matcher, CancellationTokenSource cancellationTokenSource)
+        private bool Visit(BaseNode node, NodeQueryMatcher matcher, List<SearchResult> results, CancellationToken cancellationToken)
         {
-            if (cancellationTokenSource.IsCancellationRequested)
+            var isMatch = false;
+            var containsMatch = false;
+
+            if (cancellationToken.IsCancellationRequested)
             {
-                return;
+                return false;
             }
 
-            if (resultSet.Count >= maxResults)
+            if (resultCount < maxResults)
             {
-                cancellationTokenSource.Cancel();
-                return;
-            }
-
-            var result = matcher.IsMatch(node);
-            if (result != null)
-            {
-                resultSet.Add(result);
-            }
-        }
-
-        private static void MarkSearchResults(Build build, IEnumerable<BaseNode> searchResults)
-        {
-            var resultSet = new HashSet<BaseNode>(searchResults);
-            var ancestorNodes = new HashSet<BaseNode>();
-
-            foreach (var node in resultSet)
-            {
-                var current = (node as ParentedNode)?.Parent;
-                while (current != null && ancestorNodes.Add(current))
+                var result = matcher.IsMatch(node);
+                if (result != null)
                 {
-                    current = current.Parent;
+                    isMatch = true;
+                    lock (results)
+                    {
+                        results.Add(result);
+                        resultCount++;
+                    }
+                }
+            }
+            else if (!markResultsInTree)
+            {
+                // we save a lot of time if we don't have to visit the entire tree to mark results
+                // after we've found maximum allowed results
+                return false;
+            }
+
+            if (node is TreeNode treeNode && treeNode.HasChildren)
+            {
+                var children = treeNode.Children;
+                if (node is Project)
+                {
+                    var tasks = new System.Threading.Tasks.Task<List<SearchResult>>[children.Count];
+
+                    for (int i = 0; i < children.Count; i++)
+                    {
+                        var child = children[i];
+                        var task = TPLTask.Run(() =>
+                        {
+                            var list = new List<SearchResult>();
+                            Visit(child, matcher, list, cancellationToken);
+                            return list;
+                        });
+                        tasks[i] = task;
+                    }
+
+                    TPLTask.WaitAll(tasks);
+
+                    lock (results)
+                    {
+                        for (int i = 0; i < tasks.Length; i++)
+                        {
+                            var task = tasks[i];
+                            var subList = task.Result;
+                            results.AddRange(subList);
+                            containsMatch |= subList.Count > 0;
+                        }
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < children.Count; i++)
+                    {
+                        var child = children[i];
+                        containsMatch |= Visit(child, matcher, results, cancellationToken);
+                    }
                 }
             }
 
-            build.VisitAllChildren<BaseNode>(node =>
+            // setting these flags on each node is expensive so do it only if the feature is enabled
+            if (markResultsInTree)
             {
-                node.IsSearchResult = resultSet.Contains(node);
-                node.ContainsSearchResult = ancestorNodes.Contains(node);
-            });
+                node.IsSearchResult = isMatch;
+                node.ContainsSearchResult = containsMatch;
+            }
+
+            return isMatch || containsMatch;
         }
     }
 }

@@ -13,7 +13,7 @@ namespace StructuredLogViewer
         public DateTime StartTime { get; set; }
         public DateTime EndTime { get; set; }
         public TimeSpan Duration => EndTime - StartTime;
-        public ParentedNode Node { get; set; }
+        public BaseNode Node { get; set; }
         public int Indent { get; set; }
 
         public BlockEndpoint StartPoint;
@@ -21,7 +21,7 @@ namespace StructuredLogViewer
 
         public string GetTooltip()
         {
-            var text = Node.ToString();
+            var text = TextUtilities.ShortenValue(Node.ToString(), maxChars: 100);
 
             var project = Node.GetNearestParent<Project>();
             if (project != null)

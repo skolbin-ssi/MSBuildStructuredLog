@@ -179,6 +179,19 @@
     </HierarchicalDataTemplate.Triggers>
   </HierarchicalDataTemplate>
 
+  <HierarchicalDataTemplate DataType="{x:Type l:TimedNode}"
+                            ItemsSource="{Binding Children}">
+    <StackPanel Orientation="Horizontal">
+      <Rectangle x:Name="icon" Style="{StaticResource NodeIcon}" Stroke="{StaticResource FolderStroke}" Fill="{StaticResource ClosedFolderBrush}" />
+      <TextBlock x:Name="nameText" Text="{Binding Name}" />
+    </StackPanel>
+    <HierarchicalDataTemplate.Triggers>
+      <DataTrigger Binding="{Binding IsSelected}" Value="False">
+        <Setter TargetName="nameText" Property="Foreground" Value="DarkGoldenrod" />
+      </DataTrigger>
+    </HierarchicalDataTemplate.Triggers>
+  </HierarchicalDataTemplate>
+
   <HierarchicalDataTemplate DataType="{x:Type l:Project}"
                             ItemsSource="{Binding Children}">
     <StackPanel Orientation="Horizontal" x:Name="projectRoot">
@@ -432,10 +445,11 @@
 
   <DataTemplate DataType="{x:Type core:ButtonNode}">
     <StackPanel Orientation="Horizontal">
-      <Button x:Name="button" 
-              Content="{Binding Text}" 
-              Command="{Binding Command}" 
-              Padding="4,2,4,2"/>
+      <Button x:Name="button"
+              Content="{Binding Text}"
+              Command="{Binding Command}"
+              IsEnabled="{Binding IsEnabled}"
+              Padding="4,2,4,2" />
     </StackPanel>
   </DataTemplate>
 
@@ -708,6 +722,10 @@
                       Margin="10,0,10,10"
                       IsChecked="{Binding ParentAllTargetsUnderProject}" 
                       ToolTip="Linearize/flatten all targets under the project instead of parenting targets under their dependency target"/>
+            <CheckBox Content="Mark search results with a dot in the main tree"
+                      Margin="10,0,10,10"
+                      IsChecked="{Binding MarkResultsInTree}" 
+                      ToolTip="Mark tree nodes that appear in search results with a dot"/>
           </StackPanel>
         </Grid>
       </Grid>

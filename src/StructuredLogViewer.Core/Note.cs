@@ -2,5 +2,8 @@
 {
     public class Note : TextNode
     {
+        protected override bool IsSelectable => false;
+
+        public override string TypeName => nameof(Note);
     }
 }

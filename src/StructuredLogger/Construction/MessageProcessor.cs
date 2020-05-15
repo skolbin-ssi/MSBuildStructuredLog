@@ -61,6 +61,9 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     if (message.StartsWith(OutputItemsMessagePrefix))
                     {
                         var task = GetTask(args);
+
+                        //this.construction.Build.Statistics.ReportOutputItemMessage(task, message);
+
                         var folder = task.GetOrCreateNodeWithName<Folder>("OutputItems");
                         var parameter = ItemGroupParser.ParsePropertyOrItemList(message, OutputItemsMessagePrefix, stringTable);
                         folder.AddChild(parameter);
@@ -94,6 +97,13 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     if (message.StartsWith(TaskParameterMessagePrefix))
                     {
                         var task = GetTask(args);
+                        if (IgnoreParameters(task))
+                        {
+                            return;
+                        }
+
+                        //this.construction.Build.Statistics.ReportTaskParameterMessage(task, message);
+
                         var folder = task.GetOrCreateNodeWithName<Folder>(Strings.Parameters);
                         var parameter = ItemGroupParser.ParsePropertyOrItemList(message, TaskParameterMessagePrefix, stringTable);
                         folder.AddChild(parameter);
@@ -126,6 +136,17 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             // Just the generic log message or something we currently don't handle in the object model.
             AddMessage(args, message);
+        }
+
+        private bool IgnoreParameters(Task task)
+        {
+            string taskName = task.Name;
+            if (taskName == "Message")
+            {
+                return true;
+            }
+
+            return false;
         }
 
         private Task GetTask(BuildMessageEventArgs args)
@@ -179,7 +200,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             else if (itemGroup is Parameter parameter)
             {
                 containerNode.Name = parameter.Name;
-                foreach (ParentedNode child in parameter.Children)
+                foreach (BaseNode child in parameter.Children)
                 {
                     child.Parent = null;
                     containerNode.AddChild(child);
@@ -190,7 +211,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 last.GetType() == containerNode.GetType() &&
                 last.Name == containerNode.Name)
             {
-                foreach (ParentedNode child in containerNode.Children)
+                foreach (BaseNode child in containerNode.Children)
                 {
                     child.Parent = null;
                     last.AddChild(child);
@@ -220,7 +241,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 Text = message,
                 Timestamp = args.Timestamp
             };
-            object nodeToAdd = messageNode;
+            BaseNode nodeToAdd = messageNode;
 
             if (args.BuildEventContext?.TaskId > 0)
             {
@@ -388,11 +409,21 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     }
                 }
             }
-            else if (Reflector.GetEvaluationId(args.BuildEventContext) is int evaluationId && evaluationId != -1)
+            else if (args.BuildEventContext.EvaluationId != -1)
             {
-                var evaluation = construction.EvaluationFolder;
-                var project = evaluation.FindChild<Project>(p => p.Id == evaluationId);
-                node = project;
+                node = construction.EvaluationFolder;
+
+                var project = node.FindChild<ProjectEvaluation>(p => p.Id == args.BuildEventContext.EvaluationId);
+                if (project != null)
+                {
+                    node = project;
+                }
+
+                if (Strings.IsPropertyReassignmentMessage(message))
+                {
+                    var properties = node.GetOrCreateNodeWithName<Folder>(Strings.Properties, true);
+                    node = properties.GetOrCreateNodeWithName<Folder>(Strings.GetPropertyName(message));
+                }
 
                 if (node != null && node.FindChild<Message>(message) != null)
                 {
@@ -414,6 +445,15 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
                     node = construction.EvaluationFolder;
                 }
+                else if (Strings.IsPropertyReassignmentMessage(message))
+                {
+                    if (!evaluationMessagesAlreadySeen.Add(message))
+                    {
+                        return;
+                    }
+                    var properties = construction.EvaluationFolder.GetOrCreateNodeWithName<Folder>(Strings.Properties);
+                    node = properties.GetOrCreateNodeWithName<Folder>(Strings.GetPropertyName(message));
+                }
                 else if (Strings.IsTargetDoesNotExistAndWillBeSkipped(message))
                 {
                     var folder = construction.EvaluationFolder;
@@ -431,6 +471,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     DetailedSummary.AppendLine(message);
                     return;
                 }
+
             }
 
             node.AddChild(nodeToAdd);
