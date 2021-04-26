@@ -1,8 +1,8 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.27703.2047
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30128.74
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StructuredLogViewer", "src\StructuredLogViewer\StructuredLogViewer.csproj", "{FAEE07FD-7384-40D4-B52B-4756D1011BA6}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "StructuredLogViewer", "src\StructuredLogViewer\StructuredLogViewer.csproj", "{FAEE07FD-7384-40D4-B52B-4756D1011BA6}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "StructuredLogger", "src\StructuredLogger\StructuredLogger.csproj", "{A939886E-A191-4A46-A84B-21AD670081B9}"
 EndProject
@@ -23,6 +23,10 @@ EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "StructuredLogViewer.Core", "src\StructuredLogViewer.Core\StructuredLogViewer.Core.csproj", "{3C655C5D-22C3-4B8D-969C-3FC497294703}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "StructuredLogViewer.Avalonia", "src\StructuredLogViewer.Avalonia\StructuredLogViewer.Avalonia.csproj", "{B8DB3798-1636-417D-B57A-25C51C574F1E}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ResourcesGenerator", "src\ResourcesGenerator\ResourcesGenerator.csproj", "{B94C5F8A-E55F-4E07-A8BE-D8D3A203FD14}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BinlogTool", "src\BinlogTool\BinlogTool.csproj", "{35F44EA6-7259-43CC-8C17-E058F3EB86D3}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -54,6 +58,14 @@ Global
 		{B8DB3798-1636-417D-B57A-25C51C574F1E}.Debug|Mixed Platforms.Build.0 = Debug|Any CPU
 		{B8DB3798-1636-417D-B57A-25C51C574F1E}.Release|Mixed Platforms.ActiveCfg = Release|Any CPU
 		{B8DB3798-1636-417D-B57A-25C51C574F1E}.Release|Mixed Platforms.Build.0 = Release|Any CPU
+		{B94C5F8A-E55F-4E07-A8BE-D8D3A203FD14}.Debug|Mixed Platforms.ActiveCfg = Debug|Any CPU
+		{B94C5F8A-E55F-4E07-A8BE-D8D3A203FD14}.Debug|Mixed Platforms.Build.0 = Debug|Any CPU
+		{B94C5F8A-E55F-4E07-A8BE-D8D3A203FD14}.Release|Mixed Platforms.ActiveCfg = Release|Any CPU
+		{B94C5F8A-E55F-4E07-A8BE-D8D3A203FD14}.Release|Mixed Platforms.Build.0 = Release|Any CPU
+		{35F44EA6-7259-43CC-8C17-E058F3EB86D3}.Debug|Mixed Platforms.ActiveCfg = Debug|Any CPU
+		{35F44EA6-7259-43CC-8C17-E058F3EB86D3}.Debug|Mixed Platforms.Build.0 = Debug|Any CPU
+		{35F44EA6-7259-43CC-8C17-E058F3EB86D3}.Release|Mixed Platforms.ActiveCfg = Release|Any CPU
+		{35F44EA6-7259-43CC-8C17-E058F3EB86D3}.Release|Mixed Platforms.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

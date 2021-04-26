@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Linq;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -8,25 +9,38 @@ namespace StructuredLogViewer.Controls
 {
     public partial class SearchAndResultsControl : UserControl
     {
-        private TypingConcurrentOperation typingConcurrentOperation = new TypingConcurrentOperation();
+        private readonly TypingConcurrentOperation typingConcurrentOperation = new TypingConcurrentOperation();
 
         public SearchAndResultsControl()
         {
             InitializeComponent();
-            typingConcurrentOperation.DisplayResults += (r, moreAvailable) => DisplaySearchResults(r, moreAvailable);
+            typingConcurrentOperation.DisplayResults += (r, moreAvailable, cancellationToken) => DisplaySearchResults(r, moreAvailable, cancellationToken);
             typingConcurrentOperation.SearchComplete += TypingConcurrentOperation_SearchComplete;
+
+            VirtualizingPanel.SetIsVirtualizing(resultsList, SettingsService.EnableTreeViewVirtualization);
+
+            this.Unloaded += SearchAndResultsControl_Unloaded;
+        }
+
+        private void SearchAndResultsControl_Unloaded(object sender, RoutedEventArgs e)
+        {
+            typingConcurrentOperation.ReleaseTimer();
         }
 
         private void TypingConcurrentOperation_SearchComplete(string searchText, object arg2, TimeSpan elapsed)
         {
             BuildControl.Elapsed = elapsed;
-            SettingsService.AddRecentSearchText(searchText, discardPrefixes: true);
+            SettingsService.AddRecentSearchText(searchText, discardPrefixes: true, RecentItemsCategory);
         }
+
+        public string RecentItemsCategory { get; set; }
 
         public TreeView ResultsList => resultsList;
         public Func<object, bool, IEnumerable> ResultsTreeBuilder { get; set; }
         public event Action WatermarkDisplayed;
         public event Action<string> TextChanged;
+
+        public Grid TopPanel => topPanel;
 
         public ExecuteSearchFunc ExecuteSearch
         {
@@ -62,27 +76,38 @@ namespace StructuredLogViewer.Controls
             typingConcurrentOperation.TextChanged(searchText, Search.DefaultMaxResults);
         }
 
-        private void DisplaySearchResults(object results, bool moreAvailable = false)
+        private void DisplaySearchResults(object results, bool moreAvailable = false, CancellationToken cancellationToken = default)
         {
             Application.Current.Dispatcher.InvokeAsync(() =>
             {
-                DisplayItems(ResultsTreeBuilder(results, moreAvailable));
-            });
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var tree = ResultsTreeBuilder(results, moreAvailable);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                DisplayItems(tree);
+            }, System.Windows.Threading.DispatcherPriority.Background);
         }
 
         public void DisplayItems(IEnumerable content)
         {
             if ((content == null || !content.OfType<object>().Any()) && WatermarkContent != null)
             {
-                if (watermark.Visibility != Visibility.Visible)
+                if (watermarkScrollViewer.Visibility != Visibility.Visible)
                 {
-                    watermark.Visibility = Visibility.Visible;
+                    watermarkScrollViewer.Visibility = Visibility.Visible;
                     WatermarkDisplayed?.Invoke();
                 }
             }
             else
             {
-                watermark.Visibility = Visibility.Collapsed;
+                watermarkScrollViewer.Visibility = Visibility.Collapsed;
             }
 
             resultsList.ItemsSource = content;

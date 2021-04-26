@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -15,14 +16,16 @@ namespace StructuredLogViewer.Controls
             this.MouseLeave += Control_MouseLeave;
             this.MouseUp += Control_MouseUp;
 
-            DestinationNodeGetter = GetParentTarget;
+            DestinationNodeGetter = GetDestination;
         }
 
         private Brush defaultForeground;
 
         public Func<BaseNode> DestinationNodeGetter { get; set; }
 
-        public Target GetParentTarget()
+        public string HyperlinkKind { get; set; }
+
+        public BaseNode GetDestination()
         {
             if (DataContext is Target target)
             {
@@ -32,10 +35,35 @@ namespace StructuredLogViewer.Controls
                     var project = target.Project;
                     if (project != null)
                     {
-                        var parentTarget = project.FindFirstDescendant<Target>(t => t.Name == parentTargetName);
+                        var parentTarget = project.FindFirstDescendant<Target>(t => t.Name == parentTargetName && t.Project == project);
                         return parentTarget;
                     }
                 }
+            }
+            else if (DataContext is Project project)
+            {
+                if (HyperlinkKind == "Evaluation")
+                {
+                    var evaluation = project.GetNearestParent<Build>()?.FindEvaluation(project.EvaluationId);
+                    if (evaluation != null)
+                    {
+                        return evaluation;
+                    }
+
+                    return null;
+                }
+
+                var targetName = project.EntryTargets.FirstOrDefault();
+                if (targetName != null)
+                {
+                    var firstTarget = project.FindFirstDescendant<Target>(t => t.Name == targetName && t.Project == project);
+                    return firstTarget;
+                }
+            }
+
+            if (DataContext is EntryTarget entryTarget)
+            {
+                return entryTarget.Target;
             }
 
             return null;

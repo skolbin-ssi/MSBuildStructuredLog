@@ -70,7 +70,7 @@ namespace StructuredLogViewer.Avalonia.Controls
 
             searchLogControl.ExecuteSearch = (searchText, maxResults, cancellationToken) =>
             {
-                var search = new Search(Build, maxResults);
+                var search = new Search(new[] { Build }, Build.StringTable.Instances, maxResults, SettingsService.MarkResultsInTree);
                 var results = search.FindNodes(searchText, cancellationToken);
                 return results;
             };
@@ -91,7 +91,7 @@ namespace StructuredLogViewer.Avalonia.Controls
             if (build.SourceFilesArchive != null)
             {
                 // first try to see if the source archive was embedded in the log
-                sourceFileResolver = new SourceFileResolver(build.SourceFilesArchive);
+                sourceFileResolver = new SourceFileResolver(build.SourceFiles.Values);
             }
             else
             {
@@ -132,18 +132,17 @@ namespace StructuredLogViewer.Avalonia.Controls
             contextMenu.AddItem(copyValueItem);
             contextMenu.AddItem(hideItem);
 
-            var treeViewItemStyle = new Style(s => s.OfType<TreeViewItem>())
+            Style GetTreeViewItemStyle()
             {
-                Setters = new ISetter[]
-                {
-                    new Setter(TreeViewItem.IsExpandedProperty, new Binding("IsExpanded") {Mode = BindingMode.TwoWay}),
-                    new Setter(TreeViewItem.IsSelectedProperty, new Binding("IsSelected") {Mode = BindingMode.TwoWay}),
-                    new Setter(IsVisibleProperty, new Binding("IsVisible") {Mode = BindingMode.TwoWay})
-                }
-            };
+                var treeViewItemStyle = new Style(s => s.OfType<TreeViewItem>());
+                treeViewItemStyle.Setters.Add(new Setter(TreeViewItem.IsExpandedProperty, new Binding("IsExpanded") {Mode = BindingMode.TwoWay}));
+                treeViewItemStyle.Setters.Add(new Setter(TreeViewItem.IsSelectedProperty, new Binding("IsSelected") {Mode = BindingMode.TwoWay}));
+                treeViewItemStyle.Setters.Add(new Setter(IsVisibleProperty, new Binding("IsVisible") {Mode = BindingMode.TwoWay}));
+                return treeViewItemStyle;
+            }
 
             treeView.ContextMenu = contextMenu;
-            treeView.Styles.Add(treeViewItemStyle);
+            treeView.Styles.Add(GetTreeViewItemStyle());
             RegisterTreeViewHandlers(treeView);
             treeView.KeyDown += TreeView_KeyDown;
             treeView.PropertyChanged += TreeView_SelectedItemChanged;
@@ -151,14 +150,14 @@ namespace StructuredLogViewer.Avalonia.Controls
 
             ActiveTreeView = treeView;
 
-            searchLogControl.ResultsList.Styles.Add(treeViewItemStyle);
+            searchLogControl.ResultsList.Styles.Add(GetTreeViewItemStyle());
             RegisterTreeViewHandlers(searchLogControl.ResultsList);
             searchLogControl.ResultsList.SelectionChanged += ResultsList_SelectionChanged;
             searchLogControl.ResultsList.GotFocus += (s, a) => ActiveTreeView = searchLogControl.ResultsList;
             searchLogControl.ResultsList.ContextMenu = sharedTreeContextMenu;
 
             findInFilesControl.GotFocus += (s, a) => ActiveTreeView = findInFilesControl.ResultsList;
-            findInFilesControl.ResultsList.Styles.Add(treeViewItemStyle);
+            findInFilesControl.ResultsList.Styles.Add(GetTreeViewItemStyle());
             RegisterTreeViewHandlers(findInFilesControl.ResultsList);
             findInFilesControl.ResultsList.GotFocus += (s, a) => ActiveTreeView = findInFilesControl.ResultsList;
             findInFilesControl.ResultsList.ContextMenu = sharedTreeContextMenu;
@@ -168,7 +167,7 @@ namespace StructuredLogViewer.Avalonia.Controls
                 filesTab.IsVisible = true;
                 findInFilesTab.IsVisible = true;
                 PopulateFilesTab();
-                filesTree.Styles.Add(treeViewItemStyle);
+                filesTree.Styles.Add(GetTreeViewItemStyle());
                 RegisterTreeViewHandlers(filesTree);
 
                 var text =
@@ -271,12 +270,14 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             "was not imported by ",
             "out-of-date",
             "csc $task",
-            "ResolveAssemblyReference $task"
+            "ResolveAssemblyReference $task",
+            "$message CompilerServer failed",
         };
 
         private static string[] nodeKinds = new[]
         {
             "$project",
+            "$projectevaluation",
             "$target",
             "$task",
             "$error",
@@ -297,7 +298,7 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
         {
             string watermarkText1 = @"Type in the search box to search. Press Ctrl+F to focus the search box. Results (up to 1000) will display here.
 
-Search for multiple words separated by space (space means AND). Enclose multiple words in double-quotes """" to search for the exact phrase.
+Search for multiple words separated by space (space means AND). Enclose multiple words in double-quotes """" to search for the exact phrase. Enclose a single word in quotes to search for exact match (turns off substring search).
 
 Use syntax like '$property Prop' to narrow results down by item kind. Supported kinds: ";
 
@@ -465,8 +466,21 @@ Recent:
 
             foreach (var file in archiveFile.Files.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase))
             {
-                var parts = file.Key.Split('\\');
-                AddSourceFile(root, file.Key, parts, 0);
+                AddSourceFile(root, file.Key);
+            }
+
+            foreach (var taskAssembly in Build.TaskAssemblies)
+            {
+                var filePath = ArchiveFile.CalculateArchivePath(taskAssembly.Key);
+                var sourceFile = AddSourceFile(root, filePath);
+                foreach (var taskName in taskAssembly.Value.OrderBy(s => s))
+                {
+                    var task = new Task
+                    {
+                        Name = taskName
+                    };
+                    sourceFile.AddChild(task);
+                }
             }
 
             foreach (var subFolder in root.Children.OfType<Folder>())
@@ -503,7 +517,13 @@ Recent:
             }
         }
 
-        private void AddSourceFile(Folder folder, string filePath, string[] parts, int index)
+        private SourceFile AddSourceFile(Folder folder, string filePath)
+        {
+            var parts = filePath.Split('\\', '/');
+            return AddSourceFile(folder, filePath, parts, 0);
+        }
+
+        private SourceFile AddSourceFile(Folder folder, string filePath, string[] parts, int index)
         {
             if (index == parts.Length - 1)
             {
@@ -513,12 +533,13 @@ Recent:
                     Name = parts[index]
                 };
                 folder.AddChild(file);
+                return file;
             }
             else
             {
                 var subfolder = folder.GetOrCreateNodeWithName<Folder>(parts[index]);
                 subfolder.IsExpanded = true;
-                AddSourceFile(subfolder, filePath, parts, index + 1);
+                return AddSourceFile(subfolder, filePath, parts, index + 1);
             }
         }
 
@@ -837,7 +858,14 @@ Recent:
                             line = hasLine.LineNumber ?? 0;
                         }
 
-                        return DisplayFile(hasSourceFile.SourceFilePath, line);
+                        ProjectEvaluation evaluation = null;
+                        if (hasSourceFile is TreeNode node)
+                        {
+                            // TODO: https://github.com/KirillOsenkov/MSBuildStructuredLog/issues/392
+                            evaluation = node.GetNearestParentOrSelf<ProjectEvaluation>();
+                        }
+
+                        return DisplayFile(hasSourceFile.SourceFilePath, line, evaluation: evaluation);
                     case SourceFileLine sourceFileLine when sourceFileLine.Parent is SourceFile sourceFile && sourceFile.SourceFilePath != null:
                         return DisplayFile(sourceFile.SourceFilePath, sourceFileLine.LineNumber);
                     case NameValueNode nameValueNode when nameValueNode.IsValueShortened:
@@ -856,7 +884,7 @@ Recent:
             return false;
         }
 
-        public bool DisplayFile(string sourceFilePath, int lineNumber = 0, int column = 0, string preprocessContext = null)
+        public bool DisplayFile(string sourceFilePath, int lineNumber = 0, int column = 0, ProjectEvaluation evaluation = null)
         {
             var text = sourceFileResolver.GetSourceFileText(sourceFilePath);
             if (text == null)
@@ -864,7 +892,7 @@ Recent:
                 return false;
             }
 
-            Action preprocess = preprocessedFileManager.GetPreprocessAction(sourceFilePath, preprocessContext);
+            Action preprocess = preprocessedFileManager.GetPreprocessAction(sourceFilePath, PreprocessedFileManager.GetEvaluationKey(evaluation));
             documentWell.DisplaySource(sourceFilePath, text.Text, lineNumber, column, preprocess);
             return true;
         }

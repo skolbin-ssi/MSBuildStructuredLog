@@ -3,7 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using Microsoft.Build.Execution;
@@ -32,20 +32,9 @@ namespace Microsoft.Build.Logging.StructuredLogger
         private readonly MessageProcessor messageProcessor;
         private readonly StringCache stringTable;
 
-        private NamedNode evaluationFolder;
+        public StringCache StringTable => stringTable;
 
-        public NamedNode EvaluationFolder
-        {
-            get
-            {
-                if (evaluationFolder == null)
-                {
-                    evaluationFolder = Build.GetOrCreateNodeWithName<TimedNode>(Intern(Strings.Evaluation));
-                }
-
-                return evaluationFolder;
-            }
-        }
+        public NamedNode EvaluationFolder => Build.EvaluationFolder;
 
         public Construction()
         {
@@ -53,6 +42,10 @@ namespace Microsoft.Build.Logging.StructuredLogger
             Build.Name = "Build";
             this.stringTable = Build.StringTable;
             this.messageProcessor = new MessageProcessor(this, stringTable);
+            Intern(Strings.Evaluation);
+            Intern(Strings.Properties);
+            Intern(Strings.OutputItems);
+            Intern(Strings.Parameters);
         }
 
         private string Intern(string text) => stringTable.Intern(text);
@@ -88,7 +81,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
                     if (messageProcessor.DetailedSummary.Length > 0)
                     {
-                        var summary = Build.GetOrCreateNodeWithName<Message>(stringTable.Intern(Strings.DetailedSummary));
+                        var summary = Build.GetOrCreateNodeWithName<Message>(Intern(Strings.DetailedSummary));
                         if (messageProcessor.DetailedSummary[0] == '\n')
                         {
                             messageProcessor.DetailedSummary.Remove(0, 1);
@@ -134,7 +127,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     {
                         foreach (var parent in parents)
                         {
-                            var parentNode = project.GetOrAddTargetByName(parent);
+                            var parentNode = project.GetOrAddTargetByName(parent, default);
                             if (parentNode != null && (parentNode.Id != -1 || parentNode.HasChildren))
                             {
                                 parentNode.TryAddTarget(unparentedTarget);
@@ -181,7 +174,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                         int parentTaskId = parentContext.TaskId;
                         if (parentProject != null && parentTaskId > 0)
                         {
-                            parentNode = parentProject.FindFirstDescendant<Task>(t => t.Id == parentTaskId && t.GetNearestParent<Project>().Id == parentProjectId);
+                            parentNode = parentProject.GetTaskById(parentTaskId);
                         }
                     }
 
@@ -228,18 +221,12 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         public void TargetStarted(object sender, TargetStartedEventArgs args)
         {
-            TargetBuiltReason targetBuiltReason = TargetBuiltReason.None;
-            if (args is TargetStartedEventArgs targetStartedArgs)
-            {
-                targetBuiltReason = targetStartedArgs.BuildReason;
-            }
-
             AddTargetCore(
                 args,
                 Intern(args.TargetName),
                 Intern(args.ParentTarget),
                 Intern(args.TargetFile),
-                targetBuiltReason);
+                args.BuildReason);
         }
 
         public static bool ParentAllTargetsUnderProject { get; set; }
@@ -259,12 +246,13 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     var target = project.CreateTarget(targetName, args.BuildEventContext.TargetId);
                     target.NodeId = args.BuildEventContext.NodeId;
                     target.StartTime = args.Timestamp;
+                    target.EndTime = target.StartTime; // will properly set later
                     target.ParentTarget = parentTargetName;
                     target.TargetBuiltReason = targetBuiltReason;
 
                     if (!ParentAllTargetsUnderProject && !string.IsNullOrEmpty(parentTargetName))
                     {
-                        var parentTarget = project.GetOrAddTargetByName(parentTargetName);
+                        var parentTarget = project.GetOrAddTargetByName(parentTargetName, args.Timestamp);
                         parentTarget.TryAddTarget(target);
                         //project.TryAddTarget(parentTarget);
                     }
@@ -344,6 +332,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
                     var task = CreateTask(args);
                     target.AddChild(task);
+                    project.OnTaskAdded(task);
                 }
             }
             catch (Exception ex)
@@ -371,6 +360,8 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
         }
 
+        private bool sawCulture = false;
+
         public void MessageRaised(object sender, BuildMessageEventArgs args)
         {
             try
@@ -381,6 +372,22 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     {
                         TargetSkipped(targetSkipped);
                         return;
+                    }
+
+                    if (!sawCulture && args.SenderName == "BinaryLogger" && args.Message.StartsWith("CurrentUICulture", StringComparison.Ordinal))
+                    {
+                        sawCulture = true;
+                        int equalsIndex = args.Message.IndexOf("=");
+                        if (equalsIndex > 0 && equalsIndex < args.Message.Length - 1)
+                        {
+                            string culture = args.Message.Substring(equalsIndex + 1, args.Message.Length - 1 - equalsIndex);
+
+                            // read language from log and initialize resource strings
+                            if (!string.IsNullOrEmpty(culture))
+                            {
+                                Strings.Initialize(culture);
+                            }
+                        }
                     }
 
                     messageProcessor.Process(args);
@@ -417,32 +424,50 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 lock (syncLock)
                 {
-                    // This happens when we consume args created by us (deserialized)
                     if (e is ProjectEvaluationStartedEventArgs projectEvaluationStarted)
                     {
                         var evaluationId = projectEvaluationStarted.BuildEventContext.EvaluationId;
-                        var projectName = Intern(projectEvaluationStarted.ProjectFile);
+                        var projectFilePath = Intern(projectEvaluationStarted.ProjectFile);
+                        var projectName = Intern(Path.GetFileName(projectFilePath));
                         var nodeName = Intern(GetEvaluationProjectName(evaluationId, projectName));
-                        var projectEvaluation = EvaluationFolder.GetOrCreateNodeWithName<ProjectEvaluation>(nodeName);
-                        if (projectEvaluation.ProjectFile == null)
-                        {
-                            projectEvaluation.ProjectFile = projectName;
-                        }
+                        var projectEvaluation = new ProjectEvaluation { Name = nodeName };
+                        EvaluationFolder.AddChild(projectEvaluation);
+                        projectEvaluation.ProjectFile = projectFilePath;
 
                         projectEvaluation.Id = evaluationId;
+                        projectEvaluation.EvaluationText = Intern("id:" + evaluationId);
                         projectEvaluation.NodeId = e.BuildEventContext.NodeId;
+                        projectEvaluation.StartTime = e.Timestamp;
+                        projectEvaluation.EndTime = e.Timestamp;
                     }
                     else if (e is ProjectEvaluationFinishedEventArgs projectEvaluationFinished)
                     {
-                        var projectName = Intern(projectEvaluationFinished.ProjectFile);
+                        var evaluationId = projectEvaluationFinished.BuildEventContext.EvaluationId;
+                        var projectFilePath = Intern(projectEvaluationFinished.ProjectFile);
+                        var projectName = Intern(Path.GetFileName(projectFilePath));
+                        var nodeName = Intern(GetEvaluationProjectName(evaluationId, projectName));
+                        var projectEvaluation = EvaluationFolder.FindLastChild<ProjectEvaluation>(e => e.Id == evaluationId);
+                        if (projectEvaluation == null)
+                        {
+                            // no matching ProjectEvaluationStarted
+                            return;
+                        }
+
+                        projectEvaluation.EndTime = e.Timestamp;
+
                         var profilerResult = projectEvaluationFinished.ProfilerResult;
                         if (profilerResult != null && projectName != null)
                         {
-                            var evaluationId = projectEvaluationFinished.BuildEventContext.EvaluationId;
-                            var nodeName = Intern(GetEvaluationProjectName(evaluationId, projectName));
-                            var projectEvaluation = EvaluationFolder.GetOrCreateNodeWithName<ProjectEvaluation>(nodeName);
                             ConstructProfilerResult(projectEvaluation, profilerResult.Value);
                         }
+
+                        if (projectEvaluationFinished.GlobalProperties != null)
+                        {
+                            AddGlobalProperties(projectEvaluation, projectEvaluationFinished.GlobalProperties);
+                        }
+
+                        AddProperties(projectEvaluation, projectEvaluationFinished.Properties);
+                        AddItems(projectEvaluation, projectEvaluationFinished.Items);
                     }
                 }
             }
@@ -452,10 +477,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
         }
 
-        private static string GetEvaluationProjectName(int evaluationId, string projectName)
-        {
-            return projectName + " id:" + evaluationId;
-        }
+        private static string GetEvaluationProjectName(int evaluationId, string projectName) => projectName;
 
         private void ConstructProfilerResult(ProjectEvaluation projectEvaluation, ProfilerResult profilerResult)
         {
@@ -553,8 +575,25 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         private TreeNode FindParent(BuildEventContext buildEventContext)
         {
+            TreeNode result = null;
+
+            if (buildEventContext.ProjectContextId == -2)
+            {
+                var evaluationId = buildEventContext.EvaluationId;
+
+                result = EvaluationFolder;
+
+                var projectEvaluation = result.FindChild<ProjectEvaluation>(p => p.Id == evaluationId);
+                if (projectEvaluation != null)
+                {
+                    result = projectEvaluation;
+                }
+
+                return result;
+            }
+
             Project project = GetOrAddProject(buildEventContext.ProjectContextId);
-            TreeNode result = project;
+            result = project;
             if (buildEventContext.TargetId > 0)
             {
                 var target = project.GetTargetById(buildEventContext.TargetId);
@@ -687,63 +726,93 @@ namespace Microsoft.Build.Logging.StructuredLogger
             if (project.Name == null && args != null)
             {
                 project.StartTime = args.Timestamp;
-                project.Name = Intern(args.Message);
+                project.Name = Intern(Path.GetFileName(args.ProjectFile));
                 project.ProjectFile = Intern(args.ProjectFile);
                 project.EntryTargets = string.IsNullOrWhiteSpace(args.TargetNames)
                     ? ImmutableArray<string>.Empty
                     : stringTable.InternList(TextUtilities.SplitSemicolonDelimitedList(args.TargetNames));
+                project.TargetsText = args.TargetNames;
 
-                var internedGlobalProperties = stringTable.InternStringDictionary(args.GlobalProperties) ?? ImmutableDictionary<string, string>.Empty;
+                var evaluationId = BuildEventContext.InvalidEvaluationId;
+                if (args.BuildEventContext.EvaluationId > BuildEventContext.InvalidEvaluationId)
+                {
+                    evaluationId = args.BuildEventContext.EvaluationId;
+                }
+                else if (args.ParentProjectBuildEventContext != null && args.ParentProjectBuildEventContext.EvaluationId > BuildEventContext.InvalidEvaluationId)
+                {
+                    evaluationId = args.ParentProjectBuildEventContext.EvaluationId;
+                }
 
-                project.GlobalProperties = internedGlobalProperties;
+                project.EvaluationId = evaluationId;
+                if (evaluationId != BuildEventContext.InvalidEvaluationId)
+                {
+                    project.EvaluationText = Intern("id:" + evaluationId);
+                }
+
+                project.GlobalProperties = stringTable.InternStringDictionary(args.GlobalProperties) ?? ImmutableDictionary<string, string>.Empty;
 
                 if (args.GlobalProperties != null)
                 {
-                    AddGlobalProperties(project, internedGlobalProperties);
+                    AddGlobalProperties(project, project.GlobalProperties);
                 }
 
-                if (args.Properties != null)
+                if (!string.IsNullOrEmpty(args.TargetNames))
                 {
-                    var properties = project.GetOrCreateNodeWithName<Folder>(Intern("Properties"));
-                    AddProperties(properties, args
-                        .Properties
-                        .Cast<DictionaryEntry>()
-                        .OrderBy(d => d.Key)
-                        .Select(d => new KeyValuePair<string, string>(
-                            Intern(Convert.ToString(d.Key)),
-                            Intern(Convert.ToString(d.Value)))));
+                    AddEntryTargets(project);
                 }
 
-                if (args.Items != null)
-                {
-                    RetrieveProjectInstance(project, args);
+                AddProperties(project, args.Properties);
+                AddItems(project, args.Items);
+            }
+        }
 
-                    var items = project.GetOrCreateNodeWithName<Folder>("Items");
-                    foreach (DictionaryEntry kvp in args.Items)
+        private void AddItems(TreeNode parent, IEnumerable itemList)
+        {
+            if (itemList == null)
+            {
+                return;
+            }
+
+            var itemsNode = parent.GetOrCreateNodeWithName<Folder>(Strings.Items, addAtBeginning: true);
+            foreach (DictionaryEntry kvp in itemList.OfType<DictionaryEntry>().OrderBy(i => i.Key))
+            {
+                var itemType = Intern(Convert.ToString(kvp.Key));
+                var itemTypeNode = itemsNode.GetOrCreateNodeWithName<Folder>(itemType);
+
+                var itemNode = new Item();
+
+                var taskItem = kvp.Value as ITaskItem;
+                if (taskItem != null)
+                {
+                    itemNode.Text = Intern(taskItem.ItemSpec);
+                    foreach (DictionaryEntry metadataName in taskItem.CloneCustomMetadata())
                     {
-                        var itemName = Intern(Convert.ToString(kvp.Key));
-                        var itemGroup = items.GetOrCreateNodeWithName<Folder>(itemName);
-
-                        var item = new Item();
-
-                        var taskItem = kvp.Value as ITaskItem;
-                        if (taskItem != null)
+                        itemNode.AddChild(new Metadata
                         {
-                            item.Text = Intern(taskItem.ItemSpec);
-                            foreach (DictionaryEntry metadataName in taskItem.CloneCustomMetadata())
-                            {
-                                item.AddChild(new Metadata
-                                {
-                                    Name = Intern(Convert.ToString(metadataName.Key)),
-                                    Value = Intern(Convert.ToString(metadataName.Value))
-                                });
-                            }
-
-                            itemGroup.AddChild(item);
-                        }
+                            Name = Intern(Convert.ToString(metadataName.Key)),
+                            Value = Intern(Convert.ToString(metadataName.Value))
+                        });
                     }
+
+                    itemTypeNode.AddChild(itemNode);
                 }
             }
+        }
+
+        private void AddProperties(TreeNode project, IEnumerable properties)
+        {
+            if (properties == null)
+            {
+                return;
+            }
+
+            var propertiesFolder = project.GetOrCreateNodeWithName<Folder>(Strings.Properties, addAtBeginning: true);
+            var list = (IEnumerable<KeyValuePair<string, string>>)properties;
+
+            AddProperties(
+                propertiesFolder,
+                list.OrderBy(d => d.Key),
+                project as IProjectOrEvaluation);
         }
 
         // normally MSBuild internal data structures aren't available to loggers, but we really want access
@@ -802,24 +871,23 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 .GetValue(instance);
         }
 
+        private static HashSet<string> ignoreAssemblyForTasks = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "AssignTargetPath",
+            "CallTarget",
+            "Copy",
+            "Delete",
+            "FindUnderPath",
+            "MakeDir",
+            "Message",
+            "MSBuild",
+            "ReadLinesFromFile",
+            "WriteLinesToFile"
+        };
+
         private bool IgnoreAssembly(string taskName)
         {
-            switch (taskName)
-            {
-                case "AssignTargetPath":
-                case "CallTarget":
-                case "Copy":
-                case "Delete":
-                case "FindUnderPath":
-                case "MakeDir":
-                case "Message":
-                case "MSBuild":
-                case "ReadLinesFromFile":
-                case "WriteLinesToFile":
-                    return true;
-            }
-
-            return false;
+            return ignoreAssemblyForTasks.Contains(taskName);
         }
 
         private Task CreateTask(TaskStartedEventArgs taskStartedEventArgs)
@@ -886,17 +954,36 @@ namespace Microsoft.Build.Logging.StructuredLogger
             _taskToAssemblyMap.GetOrAdd(taskName, t => assembly);
         }
 
-        private void AddGlobalProperties(Project project, IEnumerable<KeyValuePair<string, string>> properties)
+        private void AddGlobalProperties(TreeNode project, IEnumerable globalProperties)
         {
-            var propertiesNode = project.GetOrCreateNodeWithName<Folder>("Properties");
-            if (properties != null && properties.Any())
+            if (globalProperties == null)
             {
-                var global = propertiesNode.GetOrCreateNodeWithName<Folder>("Global");
-                AddProperties(global, properties);
+                return;
+            }
+
+            var propertiesNode = project.GetOrCreateNodeWithName<Folder>(Strings.Properties, addAtBeginning: true);
+            var globalNode = propertiesNode.GetOrCreateNodeWithName<Folder>(Strings.Global, addAtBeginning: true);
+            AddProperties(globalNode, (IEnumerable<KeyValuePair<string, string>>)globalProperties, project as IProjectOrEvaluation);
+        }
+
+        private static void AddEntryTargets(Project project)
+        {
+            var targetsNode = project.GetOrCreateNodeWithName<Folder>(Strings.EntryTargets);
+            var entryTargets = project.EntryTargets;
+            if (entryTargets != null)
+            {
+                foreach (var entryTarget in entryTargets)
+                {
+                    var property = new EntryTarget
+                    {
+                        Name = entryTarget,
+                    };
+                    targetsNode.AddChild(property);
+                }
             }
         }
 
-        private void AddProperties(TreeNode parent, IEnumerable<KeyValuePair<string, string>> properties)
+        private void AddProperties(TreeNode parent, IEnumerable<KeyValuePair<string, string>> properties, IProjectOrEvaluation project = null)
         {
             if (properties == null)
             {
@@ -911,6 +998,22 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     Value = Intern(kvp.Value)
                 };
                 parent.AddChild(property);
+
+                if (project != null)
+                {
+                    if (kvp.Key == Strings.TargetFramework)
+                    {
+                        project.TargetFramework = kvp.Value;
+                    }
+                    else if (kvp.Key == Strings.TargetFrameworks)
+                    {
+                        // we want TargetFramework to take precedence over TargetFrameworks when both are present
+                        if (string.IsNullOrEmpty(project.TargetFramework) && !string.IsNullOrEmpty(kvp.Value))
+                        {
+                            project.TargetFramework = kvp.Value;
+                        }
+                    }
+                }
             }
         }
     }

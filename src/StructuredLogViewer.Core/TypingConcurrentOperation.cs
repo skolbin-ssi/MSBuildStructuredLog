@@ -7,34 +7,34 @@ namespace StructuredLogViewer
 {
     public delegate object ExecuteSearchFunc(string query, int maxResults, CancellationToken cancellationToken);
 
-    public class TypingConcurrentOperation : IDisposable
+    public class TypingConcurrentOperation
     {
         public ExecuteSearchFunc ExecuteSearch;
-        public event Action<object, bool> DisplayResults;
+        public event Action<object, bool, CancellationToken> DisplayResults;
         public event Action<string, object, TimeSpan> SearchComplete;
 
         public const int ThrottlingDelayMilliseconds = 300;
 
-        private readonly Timer timer;
+        private Timer timer;
         private string searchText;
         private int maxResults;
 
         private CancellationTokenSource currentCancellationTokenSource;
 
-        public TypingConcurrentOperation()
+        public void ReleaseTimer()
         {
-            timer = new Timer(OnTimer);
-        }
-
-        public void Dispose()
-        {
-            timer.Dispose();
+            if (timer != null)
+            {
+                timer.Change(Timeout.Infinite, Timeout.Infinite);
+                timer.Dispose();
+                timer = null;
+            }
         }
 
         public void Reset()
         {
             Interlocked.Exchange(ref currentCancellationTokenSource, null)?.Cancel();
-            timer.Change(Timeout.Infinite, Timeout.Infinite);
+            timer?.Change(Timeout.Infinite, Timeout.Infinite);
         }
 
         public void TextChanged(string searchText, int maxResults)
@@ -49,6 +49,16 @@ namespace StructuredLogViewer
 
             this.searchText = searchText;
             this.maxResults = maxResults;
+
+            SetTimer();
+        }
+
+        private void SetTimer()
+        {
+            if (timer == null)
+            {
+                timer = new Timer(OnTimer);
+            }
 
             timer.Change(ThrottlingDelayMilliseconds, Timeout.Infinite);
         }
@@ -85,7 +95,7 @@ namespace StructuredLogViewer
             if (!cts.Token.IsCancellationRequested)
             {
                 SearchComplete?.Invoke(localSearchText, results, elapsed);
-                DisplayResults?.Invoke(results, moreAvailable);
+                DisplayResults?.Invoke(results, moreAvailable, cts.Token);
             }
         }
     }

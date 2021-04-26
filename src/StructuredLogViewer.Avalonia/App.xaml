@@ -20,7 +20,7 @@
     <Application.Styles>
         <StyleInclude Source="avares://Avalonia.Themes.Default/DefaultTheme.xaml" />
         <StyleInclude Source="avares://Avalonia.Themes.Default/Accents/BaseLight.xaml"/>
-        <StyleInclude Source="resm:AvaloniaEdit.AvaloniaEdit.xaml?assembly=AvaloniaEdit" />
+        <StyleInclude Source="avares://AvaloniaEdit/AvaloniaEdit.xaml" />
         <StyleInclude Source="/Styles.xaml" />
         
         <Style Selector="Rectangle.nodeIcon">
@@ -30,8 +30,8 @@
             <Setter Property="StrokeThickness" Value="1" />
             <Setter Property="VerticalAlignment" Value="Top" />
         </Style>
-        
-        <Style Selector="DrawingPresenter.projectNodeIcon">
+
+        <Style Selector="Image.projectNodeIcon">
             <Setter Property="Width" Value="16" />
             <Setter Property="Height" Value="16" />
             <Setter Property="Margin" Value="2,2,6,2" />
@@ -69,8 +69,11 @@
             <StackPanel Orientation="Horizontal"
                         Name="projectRoot"
                         Opacity="{Binding IsLowRelevance, Converter={StaticResource RelevanceConverter}}">
-                <DrawingPresenter Classes="projectNodeIcon"
-                                  Drawing="{Binding ProjectFileExtension, Converter={StaticResource ProjectIconConverter}}" />
+                <Image Classes="projectNodeIcon">
+                    <Image.Source>
+                        <DrawingImage Drawing="{Binding ProjectFileExtension, Converter={StaticResource ProjectIconConverter}}" />
+                    </Image.Source>
+                </Image>
                 <TextBlock Text="{Binding Name}"
                            Margin="0,1,0,0" />
             </StackPanel>
@@ -81,8 +84,11 @@
             <StackPanel Orientation="Horizontal"
                         Name="projectRoot"
                         Opacity="{Binding IsLowRelevance, Converter={StaticResource RelevanceConverter}}">
-                <DrawingPresenter Classes="projectNodeIcon"
-                                  Drawing="{Binding ProjectFileExtension, Converter={StaticResource ProjectIconConverter}}" />
+                <Image Classes="projectNodeIcon">
+                    <Image.Source>
+                        <DrawingImage Drawing="{Binding ProjectFileExtension, Converter={StaticResource ProjectIconConverter}}" />
+                    </Image.Source>
+                </Image>
                 <TextBlock Text="{Binding Name}"
                            Margin="0,1,0,0" />
             </StackPanel>
@@ -103,6 +109,16 @@
                 <TextBlock Text="{Binding Name}" />
             </StackPanel>
         </TreeDataTemplate>
+
+        <DataTemplate DataType="{x:Type l:EntryTarget}">
+            <StackPanel Orientation="Horizontal">
+                <Rectangle Name="icon"
+                           Classes="nodeIcon"
+                           Stroke="{StaticResource TargetStroke}"
+                           Fill="{StaticResource TargetBrush}" />
+                <TextBlock Text="{Binding Name}" />
+            </StackPanel>
+        </DataTemplate>
 
         <TreeDataTemplate DataType="{x:Type l:Task}"
                           ItemsSource="{Binding Children}">
@@ -430,10 +446,13 @@
                                     MinHeight="200"
                                     Command="{Binding OpenProjectCommand}">
                                 <StackPanel>
-                                    <DrawingPresenter Width="100"
-                                                      Height="100"
-                                                      Margin="20" 
-                                                      Drawing="{StaticResource SlnIcon}" />
+                                    <Image Width="100"
+                                           Height="100"
+                                           Margin="20">
+                                        <Image.Source>
+                                            <DrawingImage Drawing="{StaticResource SlnIcon}" />
+                                        </Image.Source>
+                                    </Image>
                                     <TextBlock Text="Open Project/Solution"
                                                FontSize="16"
                                                Margin="10"
@@ -562,7 +581,7 @@
                     <TextBlock Text="Specify custom MSBuild command line arguments:"
                                Margin="0,0,0,7" />
                     <WrapPanel Orientation="Horizontal">
-                        <DropDown Items="{Binding MSBuildLocations}"
+                        <ComboBox Items="{Binding MSBuildLocations}"
                                   ToolTip.Tip="Select MSBuild toolset to use for building"
                                   Height="22" />
                         <Button Command="{Binding BrowseForMSBuildCommand}"
