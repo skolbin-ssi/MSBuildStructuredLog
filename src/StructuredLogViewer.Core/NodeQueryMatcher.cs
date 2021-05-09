@@ -105,8 +105,17 @@ namespace StructuredLogViewer
         [ThreadStatic]
         private static string[] searchFieldsThreadStatic;
 
-        public NodeQueryMatcher(string query, IEnumerable<string> stringTable, CancellationToken cancellationToken = default)
+        private readonly StringCache stringCache; // only used for validation that all strings are interned (disabled)
+
+        public NodeQueryMatcher(
+            string query,
+            IEnumerable<string> stringTable,
+            CancellationToken cancellationToken = default,
+            StringCache stringCache = null // validation disabled in production
+            )
         {
+            this.stringCache = stringCache;
+
             query = PreprocessQuery(query);
 
             this.Query = query;
@@ -327,6 +336,13 @@ namespace StructuredLogViewer
 
             // in case they want to narrow down the search such as "Build target" or "Copy task"
             var typeName = node.TypeName;
+
+            // for tasks derived from Task $task should still work
+            if (node is Microsoft.Build.Logging.StructuredLogger.Task t && t.IsDerivedTask)
+            {
+                searchFields[count++] = "Task";
+            }
+
             searchFields[count++] = typeName;
 
             if (node is NameValueNode nameValueNode)
@@ -373,34 +389,39 @@ namespace StructuredLogViewer
                         }
                     }
                 }
-                else if (node is Project project)
+                else if (node is TimedNode)
                 {
-                    if (!string.IsNullOrEmpty(project.TargetFramework))
+                    if (node is Project project)
                     {
-                        searchFields[count++] = project.TargetFramework;
-                    }
+                        if (!string.IsNullOrEmpty(project.TargetFramework))
+                        {
+                            searchFields[count++] = project.TargetFramework;
+                        }
 
-                    if (!string.IsNullOrEmpty(project.TargetsText))
-                    {
-                        searchFields[count++] = project.TargetsText;
-                    }
+                        if (!string.IsNullOrEmpty(project.TargetsText))
+                        {
+                            searchFields[count++] = project.TargetsText;
+                        }
 
-                    if (!string.IsNullOrEmpty(project.EvaluationText))
-                    {
-                        searchFields[count++] = project.EvaluationText;
+                        if (!string.IsNullOrEmpty(project.EvaluationText))
+                        {
+                            searchFields[count++] = project.EvaluationText;
+                        }
                     }
-                }
-                else if (node is ProjectEvaluation evaluation)
-                {
-                    if (!string.IsNullOrEmpty(evaluation.EvaluationText))
+                    else if (node is ProjectEvaluation evaluation)
                     {
-                        searchFields[count++] = evaluation.EvaluationText;
+                        if (!string.IsNullOrEmpty(evaluation.EvaluationText))
+                        {
+                            searchFields[count++] = evaluation.EvaluationText;
+                        }
                     }
-                }
-                // for tasks derived from Task $task should still work
-                else if (node is Microsoft.Build.Logging.StructuredLogger.Task && typeName != "Task")
-                {
-                    searchFields[count++] = "Task";
+                    else if (node is Target target)
+                    {
+                        if (!string.IsNullOrEmpty(target.ParentTarget))
+                        {
+                            searchFields[count++] = target.ParentTarget;
+                        }
+                    }
                 }
             }
 
@@ -464,6 +485,10 @@ namespace StructuredLogViewer
                 for (int j = 0; j < searchFields.count; j++)
                 {
                     var field = searchFields.array[j];
+
+                    //if (!stringCache.Contains(field))
+                    //{
+                    //}
 
                     if (!term.IsMatch(field, MatchesInStrings[i]))
                     {
