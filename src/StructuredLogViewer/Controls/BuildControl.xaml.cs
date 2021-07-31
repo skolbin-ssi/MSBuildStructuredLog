@@ -34,6 +34,7 @@ namespace StructuredLogViewer.Controls
         private SourceFileResolver sourceFileResolver;
         private ArchiveFileResolver archiveFile => sourceFileResolver.ArchiveFile;
         private PreprocessedFileManager preprocessedFileManager;
+        private NavigationHelper navigationHelper;
 
         private MenuItem copyItem;
         private MenuItem copySubtreeItem;
@@ -329,6 +330,9 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             preprocessedFileManager = new PreprocessedFileManager(this.Build, sourceFileResolver);
             preprocessedFileManager.DisplayFile += filePath => DisplayFile(filePath);
 
+            navigationHelper = new NavigationHelper(Build, sourceFileResolver);
+            navigationHelper.OpenFileRequested += filePath => DisplayFile(filePath);
+
             centralTabControl.SelectionChanged += CentralTabControl_SelectionChanged;
         }
 
@@ -361,16 +365,6 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
                     CollectStrings(child, strings);
                 }
             }
-        }
-
-        private IEnumerable<SearchResult> FindPropertiesAndItems(IProjectOrEvaluation projectOrEvaluation, string searchText)
-        {
-            if (projectOrEvaluation is not TimedNode node)
-            {
-                return null;
-            }
-
-            return null;
         }
 
         private void CentralTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -532,9 +526,9 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             "$noimport"
         };
 
-        Inline MakeLink(string query, SearchAndResultsControl searchControl, string before = " • ", string after = "\r\n")
+        private static Inline MakeLink(string query, SearchAndResultsControl searchControl, string before = " \u2022 ", string after = "\r\n")
         {
-            var hyperlink = new Hyperlink(new Run(query));
+            var hyperlink = new Hyperlink(new Run(query.Trim()));
             hyperlink.Click += (s, e) => searchControl.SearchText = query;
 
             var span = new System.Windows.Documents.Span();
@@ -589,7 +583,7 @@ Examples:
                 }
 
                 isFirst = false;
-                watermark.Inlines.Add(MakeLink(nodeKind, searchLogControl, before: null, after: null));
+                watermark.Inlines.Add(MakeLink(nodeKind + " ", searchLogControl, before: null, after: null));
             }
 
             watermark.Inlines.Add(new LineBreak());
@@ -626,7 +620,7 @@ Recent:
                 "Surround the search term in quotes to find an exact match " +
                 "(turns off substring search). Prefix the search term with " +
                 "[[name=]] or [[value=]] to only search property and metadata names " +
-                "or values. Add [[$property]], [[$item]] or [[$metadata]] to limit search " +
+                "or values. Add [[$property ]], [[$item ]] or [[$metadata ]] to limit search " +
                 "to a specific node type.";
 
             var watermark = new TextBlock();
@@ -1035,16 +1029,16 @@ Recent:
             var project = node.GetNearestParentOrSelf<Project>();
             if (project != null)
             {
-                if (project.FindChild<Folder>(Strings.Items) != null || project.FindChild<Folder>(Strings.Properties) != null)
-                {
-                    SetProjectContext(project);
-                    return;
-                }
-
                 projectEvaluation = Build.FindEvaluation(project.EvaluationId);
                 if (projectEvaluation != null && (projectEvaluation.FindChild<Folder>(Strings.Items) != null || projectEvaluation.FindChild<Folder>(Strings.Properties) != null))
                 {
                     SetProjectContext(projectEvaluation);
+                    return;
+                }
+    
+                if (project.FindChild<Folder>(Strings.Items) != null || project.FindChild<Folder>(Strings.Properties) != null)
+                {
+                    SetProjectContext(project);
                     return;
                 }
 
@@ -1638,7 +1632,7 @@ Recent:
                 preprocess = preprocessedFileManager.GetPreprocessAction(preprocessableFilePath, PreprocessedFileManager.GetEvaluationKey(evaluation));
             }
 
-            documentWell.DisplaySource(preprocessableFilePath, text.Text, lineNumber, column, preprocess);
+            documentWell.DisplaySource(preprocessableFilePath, text.Text, lineNumber, column, preprocess, navigationHelper);
             return true;
         }
 

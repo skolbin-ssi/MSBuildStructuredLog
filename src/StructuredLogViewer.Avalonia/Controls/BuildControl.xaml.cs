@@ -31,6 +31,7 @@ namespace StructuredLogViewer.Avalonia.Controls
         private SourceFileResolver sourceFileResolver;
         private ArchiveFileResolver archiveFile => sourceFileResolver.ArchiveFile;
         private PreprocessedFileManager preprocessedFileManager;
+        private NavigationHelper navigationHelper;
 
         private MenuItem copyItem;
         private MenuItem copySubtreeItem;
@@ -190,6 +191,9 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             preprocessedFileManager = new PreprocessedFileManager(Build, sourceFileResolver);
             preprocessedFileManager.DisplayFile += path => DisplayFile(path);
 
+            navigationHelper = new NavigationHelper(Build, sourceFileResolver);
+            navigationHelper.OpenFileRequested += path => DisplayFile(path);
+
             //PopulateTimeline();
         }
 
@@ -309,7 +313,7 @@ Use syntax like '$property Prop' to narrow results down by item kind. Supported 
 Examples:
 ";
 
-            //Inline MakeLink(string query, string before = " • ", string after = "\r\n")
+            //Inline MakeLink(string query, string before = " \u2022 ", string after = "\r\n")
             //{
             //    var hyperlink = new Hyperlink(new Run(query));
             //    hyperlink.Click += (s, e) => searchLogControl.SearchText = query;
@@ -359,7 +363,7 @@ Examples:
             foreach (var example in searchExamples)
             {
                 //text += (MakeLink(example));
-                text += example;
+                text += " \u2022 " + example + Environment.NewLine;
             }
 
             var recentSearches = SettingsService.GetRecentSearchStrings();
@@ -372,7 +376,7 @@ Recent:
                 foreach (var recentSearch in recentSearches.Where(s => !searchExamples.Contains(s) && !nodeKinds.Contains(s)))
                 {
                     //text += MakeLink(recentSearch));
-                    text += recentSearch;
+                    text += " \u2022 " + recentSearch + Environment.NewLine;
                 }
             }
 
@@ -893,7 +897,7 @@ Recent:
             }
 
             Action preprocess = preprocessedFileManager.GetPreprocessAction(sourceFilePath, PreprocessedFileManager.GetEvaluationKey(evaluation));
-            documentWell.DisplaySource(sourceFilePath, text.Text, lineNumber, column, preprocess);
+            documentWell.DisplaySource(sourceFilePath, text.Text, lineNumber, column, preprocess, navigationHelper);
             return true;
         }
 

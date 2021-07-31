@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -43,19 +43,12 @@ namespace TaskRunner
                 Environment.CurrentDirectory = projectDirectory;
             }
 
-            var instance = Activator.CreateInstance(type) as ITask;
+            var instance = (ITask)Activator.CreateInstance(type);
             PopulateParameters(task, instance);
 
             instance.BuildEngine = new BuildEngine();
 
-            Run(instance);
-        }
-
-        private static bool Run(object instance)
-        {
-            var executeMethod = instance.GetType().GetMethod("Execute");
-            bool result = (bool)executeMethod.Invoke(instance, null);
-            return result;
+            instance.Execute();
         }
 
         private static void PopulateParameters(Task task, object instance)
@@ -68,7 +61,15 @@ namespace TaskRunner
 
             foreach (var parameter in parametersNode.Children)
             {
-                SetParameter(parameter, instance);
+                try
+                {
+                    SetParameter(parameter, instance);
+                }
+                catch (MissingPropertyException exception)
+                {
+                    exception.MSBuildVersion = task.GetNearestParent<Build>()?.MSBuildVersion;
+                    throw;
+                }
             }
         }
 
@@ -194,10 +195,6 @@ namespace TaskRunner
         public static void SetPropertyValue<T>(object instance, string propertyName, T value)
         {
             var propertyInfo = FindPropertyInfo(instance, propertyName, out var flags, out var type);
-            if (propertyInfo == null)
-            {
-                throw new ArgumentException("Property " + propertyName + " was not found on type " + type.ToString());
-            }
 
             // Workaround for Reflection bug 791391
             if (propertyInfo.DeclaringType != type)
@@ -214,6 +211,10 @@ namespace TaskRunner
             flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
             type = instance.GetType();
             var propertyInfo = type.GetProperty(propertyName, flags);
+            if (propertyInfo == null)
+            {
+                throw new MissingPropertyException(className: type.FullName, propertyName: propertyName);
+            }
             return propertyInfo;
         }
     }
