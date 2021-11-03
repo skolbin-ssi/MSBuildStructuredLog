@@ -61,6 +61,8 @@ namespace StructuredLogViewer.Controls
 
         public TreeView ActiveTreeView;
 
+        private PropertiesAndItemsSearch propertiesAndItemsSearch;
+
         public BuildControl(Build build, string logFilePath)
         {
             InitializeComponent();
@@ -82,9 +84,11 @@ namespace StructuredLogViewer.Controls
             searchLogControl.ResultsTreeBuilder = BuildResultTree;
             searchLogControl.WatermarkDisplayed += () =>
             {
-                Search.ClearSearchResults(Build);
+                Search.ClearSearchResults(Build, SettingsService.MarkResultsInTree);
                 UpdateWatermark();
             };
+
+            propertiesAndItemsSearch = new PropertiesAndItemsSearch();
 
             propertiesAndItemsControl.ExecuteSearch = (searchText, maxResults, cancellationToken) =>
             {
@@ -94,64 +98,12 @@ namespace StructuredLogViewer.Controls
                     return null;
                 }
 
-                var roots = new List<TreeNode>(2);
-                var properties = context.FindChild<Folder>(Strings.Properties);
-                var items = context.FindChild<Folder>(Strings.Items);
-                if (properties != null)
-                {
-                    roots.Add(properties);
-                }
-
-                if (items != null)
-                {
-                    roots.Add(items);
-                }
-
-                var strings = new StringCache();
-                foreach (var root in roots)
-                {
-                    CollectStrings(root, strings);
-                }
-
-                var search = new Search(roots, strings.Instances, maxResults, SettingsService.MarkResultsInTree);
-                var results = search.FindNodes(searchText, cancellationToken);
-                var otherResults = new List<SearchResult>();
-
-                // Find all folders where no other results are under that folder.
-                // First find all ancestors of all non-folders.
-                var allAncestors = new HashSet<BaseNode>(results.Count());
-                foreach (var result in results)
-                {
-                    var node = result.Node;
-                    if (node is not Folder itemType)
-                    {
-                        otherResults.Add(result);
-                        foreach (var ancestor in node.GetParentChainExcludingThis())
-                        {
-                            allAncestors.Add(ancestor);
-                        }
-                    }
-                }
-
-                var includeFolderChildren = new List<BaseNode>();
-
-                // Iterate over all folders where no other results are under that folder.
-                foreach (var folder in results.Select(r => r.Node).OfType<Folder>().Where(f => !allAncestors.Contains(f)))
-                {
-                    foreach (var item in folder.Children.OfType<Item>())
-                    {
-                        includeFolderChildren.Add(item);
-                    }
-                }
-
-                results =
-                    otherResults
-                    .Concat(includeFolderChildren.Select(c =>
-                    {
-                        var result = new SearchResult(c);
-                        return result;
-                    }))
-                    .ToArray();
+                var results = propertiesAndItemsSearch.Search(
+                    context,
+                    searchText,
+                    maxResults,
+                    SettingsService.MarkResultsInTree,
+                    cancellationToken);
 
                 return results;
             };
@@ -334,37 +286,6 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             navigationHelper.OpenFileRequested += filePath => DisplayFile(filePath);
 
             centralTabControl.SelectionChanged += CentralTabControl_SelectionChanged;
-        }
-
-        private void CollectStrings(BaseNode root, StringCache strings)
-        {
-            switch (root)
-            {
-                case Property property:
-                    strings.Intern(property.Name);
-                    strings.Intern(property.Value);
-                    break;
-                case Item item:
-                    strings.Intern(item.Text);
-                    break;
-                case Metadata metadata:
-                    strings.Intern(metadata.Name);
-                    strings.Intern(metadata.Value);
-                    break;
-                case Folder folder:
-                    strings.Intern(folder.Name);
-                    break;
-                default:
-                    break;
-            }
-
-            if (root is TreeNode treeNode)
-            {
-                foreach (var child in treeNode.Children)
-                {
-                    CollectStrings(child, strings);
-                }
-            }
         }
 
         private void CentralTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1024,29 +945,27 @@ Recent:
                 return;
             }
 
-            ProjectEvaluation projectEvaluation;
-
             var project = node.GetNearestParentOrSelf<Project>();
             if (project != null)
             {
-                projectEvaluation = Build.FindEvaluation(project.EvaluationId);
-                if (projectEvaluation != null && (projectEvaluation.FindChild<Folder>(Strings.Items) != null || projectEvaluation.FindChild<Folder>(Strings.Properties) != null))
-                {
-                    SetProjectContext(projectEvaluation);
-                    return;
-                }
+                //projectEvaluation = Build.FindEvaluation(project.EvaluationId);
+                //if (projectEvaluation != null && (projectEvaluation.FindChild<Folder>(Strings.Items) != null || projectEvaluation.FindChild<Folder>(Strings.Properties) != null))
+                //{
+                //    SetProjectContext(projectEvaluation);
+                //    return;
+                //}
     
-                if (project.FindChild<Folder>(Strings.Items) != null || project.FindChild<Folder>(Strings.Properties) != null)
-                {
-                    SetProjectContext(project);
-                    return;
-                }
+                //if (project.FindChild<Folder>(Strings.Items) != null || project.FindChild<Folder>(Strings.Properties) != null)
+                //{
+                //    SetProjectContext(project);
+                //    return;
+                //}
 
-                SetProjectContext(null);
+                SetProjectContext(project);
                 return;
             }
 
-            projectEvaluation = node.GetNearestParentOrSelf<ProjectEvaluation>();
+            var projectEvaluation = node.GetNearestParentOrSelf<ProjectEvaluation>();
             if (projectEvaluation != null && (projectEvaluation.FindChild<Folder>(Strings.Items) != null || projectEvaluation.FindChild<Folder>(Strings.Properties) != null))
             {
                 SetProjectContext(projectEvaluation);
@@ -1288,7 +1207,7 @@ Recent:
         {
             if (treeView.SelectedItem is TimedNode timedNode)
             {
-                var text = timedNode.GetTimeAndDurationText();
+                var text = timedNode.GetTimeAndDurationText(fullPrecision: true);
                 DisplayText(text, timedNode.ToString());
             }
         }
@@ -1730,21 +1649,15 @@ Recent:
             return node;
         }
 
-        private IEnumerable BuildResultTree(object resultsObject, bool moreAvailable = false)
+        public IEnumerable BuildResultTree(object resultsObject, bool moreAvailable = false)
         {
-            var results = resultsObject as ICollection<SearchResult>;
-            if (results == null)
-            {
-                return results;
-            }
-
-            var root = new Folder();
+            var folder = ResultTree.BuildResultTree(resultsObject, moreAvailable, Elapsed);
 
             if (moreAvailable)
             {
                 var showAllButton = new ButtonNode
                 {
-                    Text = $"Showing first {results.Count} results. Show all results instead (slow)."
+                    Text = $"Showing first {folder.Children.Count} results. Show all results instead (slow)."
                 };
 
                 showAllButton.OnClick = () =>
@@ -1753,132 +1666,10 @@ Recent:
                     searchLogControl.TriggerSearch(searchLogControl.SearchText, int.MaxValue);
                 };
 
-                root.Children.Add(showAllButton);
+                folder.AddChildAtBeginning(showAllButton);
             }
 
-            root.Children.Add(new Message
-            {
-                Text = $"{results.Count} result{(results.Count == 1 ? "" : "s")}. Search took: {Elapsed.ToString()}"
-            });
-
-            bool includeDuration = false;
-            bool includeStart = false;
-            bool includeEnd = false;
-
-            foreach (var r in results)
-            {
-                if (r.Duration != default)
-                {
-                    includeDuration = true;
-                }
-
-                if (r.StartTime != default)
-                {
-                    includeStart = true;
-                }
-
-                if (r.EndTime != default)
-                {
-                    includeEnd = true;
-                }
-            }
-
-            if (includeDuration)
-            {
-                results = results.OrderByDescending(r => r.Duration).ToArray();
-            }
-            else if (includeStart)
-            {
-                results = results.OrderBy(r => r.StartTime).ToArray();
-            }
-            else if (includeEnd)
-            {
-                results = results.OrderBy(r => r.EndTime).ToArray();
-            }
-
-            foreach (var result in results)
-            {
-                TreeNode parent = root;
-                var resultNode = result.Node;
-
-                bool isProject = resultNode is Project;
-                bool isTarget = resultNode is Target;
-
-                if (!includeDuration && !includeStart && !includeEnd && !isProject)
-                {
-                    var project = resultNode.GetNearestParent<Project>();
-                    if (project != null)
-                    {
-                        var projectName = ProxyNode.GetNodeText(project);
-                        parent = InsertParent(parent, project, projectName);
-                    }
-
-                    var target = resultNode.GetNearestParent<Target>();
-                    if (!isTarget && project != null && target != null && target.Project == project)
-                    {
-                        parent = InsertParent(parent, target, target.TypeName + " " + target.Name);
-                    }
-
-                    // nest under a Task, unless it's an MSBuild task higher up the parent chain
-                    var task = resultNode.GetNearestParent<Task>(t => !string.Equals(t.Name, "MSBuild", StringComparison.OrdinalIgnoreCase));
-                    if (task != null && !isTarget && project != null && task.GetNearestParent<Project>() == project)
-                    {
-                        parent = InsertParent(parent, task, "Task " + task.Name);
-                    }
-
-                    if (resultNode is Item item &&
-                        item.Parent is NamedNode itemParent &&
-                        (itemParent is Folder || itemParent is AddItem || itemParent is RemoveItem))
-                    {
-                        parent = InsertParent(parent, itemParent);
-                    }
-
-                    if (resultNode is Metadata metadata &&
-                        metadata.Parent is Item parentItem &&
-                        parentItem.Parent is NamedNode grandparent &&
-                        (grandparent is Folder || grandparent is AddItem || grandparent is RemoveItem))
-                    {
-                        parent = InsertParent(parent, grandparent);
-                        parent = InsertParent(parent, parentItem, parentItem.Text);
-                    }
-
-                    if (parent == root)
-                    {
-                        var evaluation = resultNode.GetNearestParent<ProjectEvaluation>();
-                        if (evaluation != null)
-                        {
-                            var evaluationName = ProxyNode.GetNodeText(evaluation);
-                            parent = InsertParent(parent, evaluation, evaluationName);
-                        }
-                    }
-                }
-
-                var proxy = new ProxyNode();
-                proxy.Original = resultNode;
-                proxy.SearchResult = result;
-                parent.Children.Add(proxy);
-            }
-
-            if (!root.HasChildren)
-            {
-                root.Children.Add(new Message { Text = "No results found." });
-            }
-
-            return root.Children;
-        }
-
-        private TreeNode InsertParent(TreeNode parent, NamedNode actualParent, string name = null)
-        {
-            name ??= actualParent.Name;
-            var folderProxy = parent.GetOrCreateNodeWithName<ProxyNode>(name);
-            folderProxy.Original = actualParent;
-            if (folderProxy.Highlights.Count == 0)
-            {
-                folderProxy.Highlights.Add(name);
-            }
-
-            folderProxy.IsExpanded = true;
-            return folderProxy;
+            return folder.Children;
         }
 
         private void TreeViewItem_RequestBringIntoView(object sender, RequestBringIntoViewEventArgs e)
@@ -1918,6 +1709,11 @@ Recent:
 
         public void DisplayStats()
         {
+            if (!File.Exists(LogFilePath))
+            {
+                return;
+            }
+
             var statsRoot = Build.FindChild<Folder>(f => f.Name.StartsWith(Strings.Statistics));
             if (statsRoot != null)
             {

@@ -318,11 +318,19 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     {
                         // the original target was skipped because of false condition, so its target id == -1
                         // Need to look it up by name, if unambiguous
-                        originalTarget = originalProject
+                        var candidates = originalProject
                             .Children
                             .OfType<Target>()
                             .Where(t => t.Name == targetName)
-                            .SingleOrDefault();
+                            .ToArray();
+                        if (candidates.Length == 1)
+                        {
+                            originalTarget = candidates[0];
+                        }
+                        else
+                        {
+                            originalTarget = null;
+                        }
 
                         target.OriginalNode = (TimedNode)originalTarget ?? originalProject;
                     }
@@ -818,9 +826,10 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
         }
 
-        public static void AddMetadata(ITaskItem item, Item itemNode)
+        public void AddMetadata(ITaskItem item, Item itemNode)
         {
-            if (item.CloneCustomMetadata() is ArrayDictionary<string, string> metadata)
+            var cloned = item.CloneCustomMetadata();
+            if (cloned is ArrayDictionary<string, string> metadata)
             {
                 int count = metadata.Count;
                 if (count == 0)
@@ -846,6 +855,25 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
                     // hot path, do not use AddChild
                     // itemNode.AddChild(metadataNode);
+                    itemNode.Children.Add(metadataNode);
+                    metadataNode.Parent = itemNode;
+                }
+            }
+            else
+            {
+                if (cloned is ICollection collection)
+                {
+                    itemNode.EnsureChildrenCapacity(collection.Count);
+                }
+
+                foreach (DictionaryEntry metadataName in cloned)
+                {
+                    var metadataNode = new Metadata
+                    {
+                        Name = SoftIntern(Convert.ToString(metadataName.Key)),
+                        Value = SoftIntern(Convert.ToString(metadataName.Value))
+                    };
+
                     itemNode.Children.Add(metadataNode);
                     metadataNode.Parent = itemNode;
                 }
