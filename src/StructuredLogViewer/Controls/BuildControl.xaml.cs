@@ -303,6 +303,10 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             {
                 PopulateProjectGraph();
             }
+            else if (selectedItem.Name == nameof(tracingTab))
+            {
+                PopulateTrace();
+            }
         }
 
         private void FilesTree_SearchTextChanged(string text)
@@ -380,9 +384,21 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             {
                 var timeline = new Timeline(Build);
                 this.timeline.BuildControl = this;
-                this.timeline.SetTimeline(timeline);
+                this.timeline.SetTimeline(timeline, Build.StartTime.Ticks);
                 this.timelineWatermark.Visibility = Visibility.Hidden;
                 this.timeline.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void PopulateTrace()
+        {
+            if (this.tracing.Timeline == null)
+            {
+                var timeline = new Timeline(Build);
+                this.tracing.BuildControl = this;
+                this.tracing.SetTimeline(timeline, Build.StartTime.Ticks, Build.EndTime.Ticks); 
+                this.tracingWatermark.Visibility = Visibility.Hidden;
+                this.tracing.Visibility = Visibility.Visible;
             }
         }
 
@@ -596,16 +612,20 @@ Recent:
                 return;
             }
 
-            var taskRunner = Path.Combine(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName), "TaskRunner.exe");
-            if (!File.Exists(taskRunner))
-            {
-                MessageBox.Show("File not found: " + taskRunner);
-                return;
-            }
-
             try
             {
-                Process.Start(taskRunner.QuoteIfNeeded(), $"{logFilePath.QuoteIfNeeded()} {task.Index} pause{(debug ? " debug" : "")}");
+                var directory = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+                var arguments = $"{logFilePath.QuoteIfNeeded()} {task.Index} pause{(debug ? " debug" : "")}";
+                if (task.GetTargetFrameworkIdentifier() == ".NETFramework")
+                {
+                    var taskRunnerExe = Path.Combine(directory, "TaskRunner.exe");
+                    Process.Start(taskRunnerExe.QuoteIfNeeded(), arguments);
+                }
+                else
+                {
+                    var taskRunnerDll = Path.Combine(directory, "TaskRunner.dll");
+                    Process.Start("dotnet", $"{taskRunnerDll.QuoteIfNeeded()} {arguments}");
+                }
             }
             catch (Exception ex)
             {
