@@ -26,6 +26,8 @@ namespace StructuredLogViewer.Controls
         // Build end time.
         private long GlobalEndTime;
 
+        private List<List<Block>> blocksCollection = new List<List<Block>>();
+
         private bool _showEvaluation = true;
         private bool _showProject = true;
         private bool _showTarget = true;
@@ -38,8 +40,7 @@ namespace StructuredLogViewer.Controls
         public int numberOfTargets = 0;
         public int numberOfTasks = 0;
         public int numberOfNodes = 0;
-
-        List<List<Block>> blocksCollection = new List<List<Block>>();
+        public int numberOfOthers = 0;
 
         public string ShowEvaluationsText => $"Show Evaluations ({numberOfEvaluations})";
 
@@ -50,6 +51,8 @@ namespace StructuredLogViewer.Controls
         public string ShowTasksText => $"Show Tasks ({numberOfTasks})";
 
         public string ShowNodesText => $"Show Nodes Divider ({numberOfNodes})";
+
+        public string ShowOthersText => $"Show Others ({numberOfOthers})";
 
         private TimeSpan initTime = TimeSpan.Zero;
         private TimeSpan computeTime = TimeSpan.Zero;
@@ -84,13 +87,24 @@ namespace StructuredLogViewer.Controls
         public bool ShowOther
         {
             get => _showOther;
-            set { _showOther = value; ComputeAndDraw(); }
+            set { _showOther = value; if (this.numberOfOthers > 0) ComputeAndDraw(); }
         }
 
         public bool ShowNodes
         {
             get => _showNodes;
-            set { _showNodes = value; ComputeAndDraw(); }
+            set
+            {
+                _showNodes = value;
+                if (_showNodes)
+                {
+                    DrawAddNodeDivider();
+                }
+                else
+                {
+                    DrawRemoveNodeDivider();
+                }
+            }
         }
 
         public TracingControl()
@@ -202,6 +216,7 @@ namespace StructuredLogViewer.Controls
                             this.numberOfTasks++;
                             break;
                         default:
+                            this.numberOfOthers++;
                             break;
                     }
                 }
@@ -211,14 +226,14 @@ namespace StructuredLogViewer.Controls
                     this.numberOfNodes++;
                 }
 
-                if (this._showEvaluation && totalItems > 10000)
+                if (this._showProject && totalItems > 10000)
                 {
-                    this._showEvaluation = false;
+                    this._showEvaluation = true;
                     this._showProject = false;
                     this._showTask = true;
                     this._showTarget = false;
                     this._showOther = false;
-                    this._showNodes = true;
+                    this._showNodes = false;
                 }
             }
 
@@ -251,22 +266,57 @@ namespace StructuredLogViewer.Controls
         private void ComputeTimeline()
         {
             var start = Timestamp;
-            var keys = Timeline.Lanes.Keys.ToList();
-            keys.Sort();
+            // Sort by the start time of each lane
+            var keys1 = Timeline.Lanes.Where(p => p.Value.Blocks.Any()).ToDictionary(key => key.Key, p => p.Value.Blocks.Min(p => p.StartTime.Ticks)).ToList();
+            keys1.Sort((l, r) =>
+            {
+                return l.Value.CompareTo(r.Value);
+            });
+            var keys = keys1.Select(Key => Key.Key).ToList();
 
-            var length = Math.Max(keys.Count(), keys.Last() + 1);
+            // Get the max number of lanes
+            var length = Math.Max(keys.Count(), keys.Max() + 1);
 
             var blocksCollectionArray = new List<Block>[length];
             Parallel.ForEach(keys, (key) =>
             {
                 var lane = Timeline.Lanes[key];
-                var panel = ComputeVisibleBlocks(lane);
-                blocksCollectionArray[key] = panel;
+                blocksCollectionArray[key] = ComputeVisibleBlocks(lane);
             });
 
-            blocksCollection = blocksCollectionArray.ToList();
+            blocksCollection = blocksCollectionArray.Where(p => p != null).ToList();
             this.computeTime = Timestamp - start;
         }
+
+        private int[] ComputerHeatGraphData(double unitDuration = 1)
+        {
+            var graphData = new int[(int)Math.Floor(ConvertTimeToPixel(GlobalEndTime - GlobalStartTime) / unitDuration)];
+
+            foreach (var blocks in blocksCollection)
+            {
+                if (blocks == null || blocks.Count == 0)
+                    continue;
+
+                foreach (var block in blocks)
+                {
+                    if (block.Node is Microsoft.Build.Logging.StructuredLogger.Task)
+                    {
+                        int left = (int)Math.Floor(ConvertTimeToPixel(block.Start - GlobalStartTime) / unitDuration);
+                        int right = (int)Math.Floor(ConvertTimeToPixel(block.End - GlobalStartTime) / unitDuration);
+
+                        for (; left <= right; left++)
+                        {
+                            graphData[left]++;
+                        }
+                    }
+                }
+            }
+
+            return graphData;
+        }
+
+        private Panel TopRulerNodeDivider;
+        private Panel HeatGraph;
 
         /// <summary>
         /// Draw Graph 
@@ -285,7 +335,15 @@ namespace StructuredLogViewer.Controls
             // Compute number of pixel for one second, used by ruler
             OneSecondPixelWidth = ConvertTimeToPixel(TimeSpan.FromSeconds(1).Ticks);
 
-            int showMeasurementMod = 0;
+            // Add Top Timeline Ruler
+            if (TopRulerNodeDivider == null)
+                TopRulerNodeDivider = CreatePanelForNodeDivider(true);
+
+            if (HeatGraph == null)
+                HeatGraph = CreateActivityLineGraph();
+
+            lanesPanel.Children.Add(HeatGraph);
+            lanesPanel.Children.Add(TopRulerNodeDivider);
 
             foreach (var blocks in blocksCollection)
             {
@@ -293,17 +351,83 @@ namespace StructuredLogViewer.Controls
 
                 if (panel != null && panel.Children.Count > 0)
                 {
-                    if (ShowNodes || showMeasurementMod == 0)
-                    {
-                        lanesPanel.Children.Add(CreatePanelForNodeDivider(showMeasurementMod % 5 == 0));
-                        showMeasurementMod++;
-                    }
-
                     lanesPanel.Children.Add(panel);
                 }
             }
 
+            if (ShowNodes)
+                DrawAddNodeDivider();
+
             this.drawTime = Timestamp - start;
+        }
+
+        private Panel CreateActivityLineGraph()
+        {
+            var timelineWidth = ConvertTimeToPixel(GlobalEndTime - GlobalStartTime);
+            var graphHeight = textHeight * 4;
+
+            // WPF is really slow to render, so only render fixed number entries
+            var lineWidth = Math.Max(timelineWidth / 4000, 1);
+            var graphData = ComputerHeatGraphData(lineWidth);
+
+            var canvas = new Canvas();
+            canvas.VerticalAlignment = VerticalAlignment.Top;
+            canvas.Background = lanesPanel.Background;
+            canvas.Height = graphHeight;
+            canvas.Width = timelineWidth;
+
+            // compute the largest value but keep it within # of nodes
+            int maxData = Math.Min(blocksCollection.Count, graphData.Max());
+
+            double dataGraphHeightRatio = graphHeight / maxData;
+
+            for (int i = 0; i < graphData.Length; i++)
+            {
+                if (graphData[i] > 0)
+                {
+                    double normalizedGraphHeight = (double)Math.Min(graphData[i], maxData) * dataGraphHeightRatio;
+                    Line barLine = new Line()
+                    {
+                        Stroke = taskBackground,
+                        StrokeThickness = lineWidth,
+                        X1 = i * lineWidth,
+                        X2 = i * lineWidth,
+                        Y1 = graphHeight,
+                        Y2 = graphHeight - normalizedGraphHeight,
+                    };
+
+                    canvas.Children.Add(barLine);
+                }
+            }
+
+            return canvas;
+        }
+
+        private void DrawAddNodeDivider()
+        {
+            int showMeasurementMod = 1;
+
+            // Start from second element to account for the top ruler
+            for (int index = 3; index < lanesPanel.Children.Count; index += 2)
+            {
+                lanesPanel.Children.Insert(index, CreatePanelForNodeDivider(showMeasurementMod % 5 == 0));
+                showMeasurementMod++;
+            }
+        }
+
+        private void DrawRemoveNodeDivider()
+        {
+            // Start from second element to account for the top ruler
+            for (int index = 2; index < lanesPanel.Children.Count; index++)
+            {
+                if (lanesPanel.Children[index] is Canvas foobar)
+                {
+                    if (foobar.Background == nodeBackground)
+                    {
+                        lanesPanel.Children.RemoveAt(index);
+                    }
+                }
+            }
         }
 
         private Panel CreatePanelForNodeDivider(bool showTime)
@@ -367,6 +491,11 @@ namespace StructuredLogViewer.Controls
             return time / TimeToPixel;
         }
 
+        private static double ConvertPixelToTime(double pixel)
+        {
+            return pixel * TimeToPixel;
+        }
+
         public void GoToTimedNode(TimedNode node)
         {
             TextBlock textblock = null;
@@ -393,8 +522,12 @@ namespace StructuredLogViewer.Controls
 
         private List<Block> ComputeVisibleBlocks(Lane lane)
         {
+            double pixelDuration = ConvertPixelToTime(1);
             var blocks = lane.Blocks.Where(b =>
             {
+                if (b.Duration.Ticks < pixelDuration)
+                    return false;
+
                 switch (b.Node)
                 {
                     case ProjectEvaluation:
@@ -435,18 +568,30 @@ namespace StructuredLogViewer.Controls
             }
 
             endpoints.Sort();
+            List<long> indentList = new List<long>(5);
 
-            int level = 0;
             foreach (var endpoint in endpoints)
             {
                 if (endpoint.IsStart)
                 {
-                    level++;
-                    endpoint.Block.Indent = level;
-                }
-                else
-                {
-                    level--;
+                    int i = 0;
+                    while (i < indentList.Count)
+                    {
+                        if (indentList[i] <= endpoint.Timestamp)
+                        {
+                            endpoint.Block.Indent = i;
+                            indentList[i] = endpoint.Block.EndTime.Ticks;
+                            break;
+                        }
+
+                        i++;
+                    }
+
+                    if (i == indentList.Count)
+                    {
+                        endpoint.Block.Indent = i;
+                        indentList.Add(endpoint.Block.EndTime.Ticks);
+                    }
                 }
             }
 
@@ -494,7 +639,7 @@ namespace StructuredLogViewer.Controls
                 textBlock.Text = $"{block.Text} ({TextUtilities.DisplayDuration(block.Duration)})";
                 textBlock.Background = ChooseBackground(block);
 
-                double indentOffset = textHeight * (block.Indent - 1);
+                double indentOffset = textHeight * block.Indent;
 
                 double left = ConvertTimeToPixel(block.Start - globalStart);
                 double duration = ConvertTimeToPixel(block.End - block.Start);

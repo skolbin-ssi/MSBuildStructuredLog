@@ -78,24 +78,32 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             TargetDoesNotExistBeforeTargetMessage = CreateRegex(GetString("TargetDoesNotExistBeforeTargetMessage"), 2);
 
-            string copyingFileFrom = GetString("Copy.FileComment");
-            string copyingFileFromEscaped = Escape(copyingFileFrom);
+            string copyingFileFromEscaped = Escape(GetString("Copy.FileComment"));
             CopyingFileFromRegex = new Regex(copyingFileFromEscaped
                 .Replace(@"\{0}", @"(?<From>[^\""]+)")
-                .Replace(@"\{1}", @"(?<To>[^\""]+)")
-                );
+                .Replace(@"\{1}", @"(?<To>[^\""]+)"), RegexOptions.Compiled);
 
             CreatingHardLinkRegex = new Regex(Escape(GetString("Copy.HardLinkComment"))
                 .Replace(@"\{0}", @"(?<From>[^\""]+)")
-                .Replace(@"\{1}", @"(?<To>[^\""]+)")
-                );
+                .Replace(@"\{1}", @"(?<To>[^\""]+)"), RegexOptions.Compiled);
 
             DidNotCopyRegex = new Regex(Escape(GetString("Copy.DidNotCopyBecauseOfFileMatch"))
                .Replace(@"\{0}", @"(?<From>[^\""]+)")
                .Replace(@"\{1}", @"(?<To>[^\""]+)")
                .Replace(@"\{2}", ".*?")
-               .Replace(@"\{3}", ".*?")
-               );
+               .Replace(@"\{3}", ".*?"), RegexOptions.Compiled);
+
+            RobocopyFileCopiedRegex = new Regex(Escape(RobocopyFileCopiedMessage)
+                .Replace(@"\{0}", @"(?<From>[^\""]+)")
+                .Replace(@"\{1}", @"(?<To>[^\""]+)"), RegexOptions.Compiled );
+
+            RobocopyFileSkippedRegex = new Regex(Escape(RobocopyFileSkippedMessage)
+                .Replace(@"\{0}", @"(?<From>[^\""]+)")
+                .Replace(@"\{1}", @"(?<To>[^\""]+)"), RegexOptions.Compiled);
+
+            RobocopyFileFailedRegex = new Regex(Escape(RobocopyFileFailedMessage)
+                .Replace(@"\{0}", @"(?<From>[^\""]+)")
+                .Replace(@"\{1}", @"(?<To>[^\""]+)"), RegexOptions.Compiled);
 
             ProjectImportSkippedMissingFile = GetString("ProjectImportSkippedMissingFile");
 
@@ -261,6 +269,9 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static Regex CopyingFileFromRegex { get; set; }
         public static Regex CreatingHardLinkRegex { get; set; }
         public static Regex DidNotCopyRegex { get; set; }
+        public static Regex RobocopyFileCopiedRegex { get; set; }
+        public static Regex RobocopyFileSkippedRegex { get; set; }
+        public static Regex RobocopyFileFailedRegex { get; set; }
         public static Regex TargetDoesNotExistBeforeTargetMessage { get; set; }
         public static Regex TargetAlreadyCompleteSuccessRegex { get; set; }
         public static Regex TargetAlreadyCompleteFailureRegex { get; set; }
@@ -446,6 +457,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         public static string Evaluation => "Evaluation";
         public static string Environment => "Environment";
+        public static string NoEnvironment => "Define a value for MSBUILDLOGALLENVIRONMENTVARIABLES to log all environment variables. Only those used in evaluating properties are currently logged.";
         public static string Imports => "Imports";
         public static string DetailedSummary => "Detailed summary";
         public static string Parameters => "Parameters";
@@ -460,6 +472,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static string EntryTargets => "Entry targets";
         public static string TargetFramework => "TargetFramework";
         public static string TargetFrameworks => "TargetFrameworks";
+        public static string TargetFrameworkVersion => "TargetFrameworkVersion";
         public static string AdditionalProperties => "Additional properties";
         public static string OutputItems => "OutputItems";
         public static string OutputProperties => "OutputProperties";
@@ -478,6 +491,11 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static string MSBuildVersionPrefix => "MSBuild version = ";
         public static string MSBuildExecutablePathPrefix => "MSBuild executable path = ";
         public static string Warnings = "Warnings";
+
+        // These aren't localized, see https://github.com/microsoft/MSBuildSdks/blob/543e965191417dee65471ee57a6702289847b49b/src/Artifacts/Tasks/Robocopy.cs#L66-L77
+        private const string RobocopyFileCopiedMessage = "Copied {0} to {1}";
+        private const string RobocopyFileSkippedMessage = "Skipped copying {0} to {1}";
+        private const string RobocopyFileFailedMessage = "Failed to copy {0} to {1}";
 
         public static string GetPropertyName(string message)
         {

@@ -33,6 +33,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public StringCache StringTable => stringTable;
 
         public NamedNode EvaluationFolder => Build.EvaluationFolder;
+        public Folder EnvironmentFolder;
 
         public Construction()
         {
@@ -73,6 +74,17 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         private string SoftIntern(string text) => stringTable.SoftIntern(text);
 
+        private readonly HashSet<string> environmentVariablesUsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public void AddEnvironmentVariable(string environmentVariableName, string environmentVariableValue)
+        {
+            if (environmentVariablesUsed.Add(environmentVariableName))
+            {
+                var property = new Property { Name = environmentVariableName, Value = environmentVariableValue };
+                EnvironmentFolder.AddChild(property);
+            }
+        }
+
         public void BuildStarted(object sender, BuildStartedEventArgs args)
         {
             try
@@ -80,8 +92,20 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 lock (syncLock)
                 {
                     Build.StartTime = args.Timestamp;
-                    var properties = Build.GetOrCreateNodeWithName<Folder>(Intern(Strings.Environment));
-                    AddProperties(properties, args.BuildEnvironment);
+
+                    EnvironmentFolder = Build.GetOrCreateNodeWithName<Folder>(Intern(Strings.Environment));
+
+                    if (args.BuildEnvironment?.Count > 0)
+                    {
+                        AddProperties(EnvironmentFolder, args.BuildEnvironment);
+                    }
+                    else
+                    {
+                        EnvironmentFolder.AddChild(new Note
+                        {
+                            Text = Intern(Strings.NoEnvironment)
+                        });
+                    }
 
                     // realize the evaluation folder now so it is ordered before the main solution node
                     _ = EvaluationFolder;
@@ -915,7 +939,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             AddProperties(
                 propertiesFolder,
-                list.OrderBy(d => d.Key, StringComparer.Ordinal),
+                list.OrderBy(d => d.Key, StringComparer.OrdinalIgnoreCase),
                 project as IProjectOrEvaluation);
         }
 
@@ -954,6 +978,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             Task result = taskName.ToLowerInvariant() switch
             {
                 "copy" => new CopyTask(),
+                "robocopy" => new RobocopyTask(),
                 "csc" => new CscTask(),
                 "vbc" => new VbcTask(),
                 "fsc" => new FscTask(),
@@ -1056,6 +1081,13 @@ namespace Microsoft.Build.Logging.StructuredLogger
                         {
                             project.TargetFramework = kvp.Value;
                         }
+                    }
+                    // If neither of the above are there - look for the old project system
+                    else if (project.TargetFramework is null && string.Equals(kvp.Key, Strings.TargetFrameworkVersion, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Note this is untranslted, so e.g. "v4.6.2" instead of "net462" - this is intentional as it
+                        // renders the badge for all projects, but you can still use this difference to tell what is/isn't an SDK project.
+                        project.TargetFramework = kvp.Value;
                     }
                 }
             }
