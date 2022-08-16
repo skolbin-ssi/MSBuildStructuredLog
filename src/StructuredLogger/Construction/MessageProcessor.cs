@@ -434,7 +434,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 parent = GetTarget(args);
 
-                if (Strings.TaskSkippedFalseConditionRegex.IsMatch(message))
+                if (message.Contains(Strings.TaskSkippedFalseCondition) && Strings.TaskSkippedFalseConditionRegex.IsMatch(message))
                 {
                     lowRelevance = true;
                 }
@@ -480,7 +480,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     parent = evaluation;
                 }
 
-                if (args is PropertyReassignmentEventArgs || Strings.PropertyReassignmentRegex.IsMatch(message))
+                if (args is PropertyReassignmentEventArgs || (message.Contains(Strings.PropertyReassignment) && Strings.PropertyReassignmentRegex.IsMatch(message)))
                 {
                     TimedNode properties;
                     if (evaluation != null)
@@ -515,7 +515,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
                     parent = construction.EvaluationFolder;
                 }
-                else if (construction.Build.FileFormatVersion < 9 && Strings.PropertyReassignmentRegex.IsMatch(message))
+                else if (construction.Build.FileFormatVersion < 9 && message.Contains(Strings.PropertyReassignment) && Strings.PropertyReassignmentRegex.IsMatch(message))
                 {
                     if (!evaluationMessagesAlreadySeen.Add(message))
                     {
@@ -571,12 +571,23 @@ namespace Microsoft.Build.Logging.StructuredLogger
             else if (nodeToAdd == null)
             {
                 message = Intern(message);
-                nodeToAdd = new Message
+                if (parent is Task task && CppAnalyzer.IsCppTask(task.Name))
                 {
-                    Text = message,
-                    Timestamp = args.Timestamp,
-                    IsLowRelevance = lowRelevance
-                };
+                    nodeToAdd = new TimedMessage
+                    {
+                        Text = message,
+                        Timestamp = args.Timestamp,
+                        IsLowRelevance = lowRelevance
+                    };
+                }
+                else
+                {
+                    nodeToAdd = new Message
+                    {
+                        Text = message,
+                        IsLowRelevance = lowRelevance
+                    };
+                }
             }
 
             parent.AddChild(nodeToAdd);

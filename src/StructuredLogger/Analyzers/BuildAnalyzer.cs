@@ -10,16 +10,19 @@ namespace Microsoft.Build.Logging.StructuredLogger
         private Build build;
         private DoubleWritesAnalyzer doubleWritesAnalyzer;
         private ResolveAssemblyReferenceAnalyzer resolveAssemblyReferenceAnalyzer;
+        private CppAnalyzer cppAnalyzer;
         private int index;
         private Dictionary<string, (TimeSpan TotalDuration, Dictionary<string, TimeSpan> ParentDurations)> taskDurations
             = new Dictionary<string, (TimeSpan TotalDuration, Dictionary<string, TimeSpan> ParentDurations)>();
         private readonly List<Folder> analyzerReports = new List<Folder>();
+        private readonly List<Folder> generatorReports = new List<Folder>();
 
         public BuildAnalyzer(Build build)
         {
             this.build = build;
             doubleWritesAnalyzer = new DoubleWritesAnalyzer();
             resolveAssemblyReferenceAnalyzer = new ResolveAssemblyReferenceAnalyzer();
+            cppAnalyzer = new CppAnalyzer();
         }
 
         public static void AnalyzeBuild(Build build)
@@ -113,7 +116,16 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
                     AnalyzeEvaluation(folder);
                 }
+                else if (folder.Name == Strings.Environment)
+                {
+                    AnalyzeEnvironment(folder);
+                }
             }
+        }
+
+        private void AnalyzeEnvironment(NamedNode folder)
+        {
+            cppAnalyzer.AnalyzeEnvironment(folder);
         }
 
         private void AnalyzeEvaluation(NamedNode folder)
@@ -186,6 +198,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             doubleWritesAnalyzer.AppendDoubleWritesFolder(build);
             resolveAssemblyReferenceAnalyzer.AppendFinalReport(build);
+            cppAnalyzer.AppendCppAnalyzer(build);
 
             if (build.LogFilePath != null)
             {
@@ -229,6 +242,12 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 var analyzerReportSummary = build.GetOrCreateNodeWithName<Folder>(Intern($"Analyzer Summary"));
                 CscTaskAnalyzer.CreateMergedReport(analyzerReportSummary, analyzerReports.ToArray());
+            }
+
+            if (generatorReports.Count > 0)
+            {
+                var generatorReportSummary = build.GetOrCreateNodeWithName<Folder>(Intern($"Generator Summary"));
+                CscTaskAnalyzer.CreateMergedReport(generatorReportSummary, generatorReports.ToArray());
             }
         }
 
@@ -317,11 +336,20 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
             else if (task.Name == "Csc")
             {
-                var analyzerReport = CscTaskAnalyzer.Analyze(task);
+                var (analyzerReport, generatorReport) = CscTaskAnalyzer.Analyze(task);
                 if (analyzerReport is not null)
                 {
                     analyzerReports.Add(analyzerReport);
                 }
+
+                if (generatorReport is not null)
+                {
+                    generatorReports.Add(generatorReport);
+                }
+            }
+            else if (CppAnalyzer.IsCppTask(task.Name))
+            {
+                cppAnalyzer.AnalyzeTask(task);
             }
 
             doubleWritesAnalyzer.AnalyzeTask(task);
