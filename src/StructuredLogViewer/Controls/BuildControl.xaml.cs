@@ -55,7 +55,6 @@ namespace StructuredLogViewer.Controls
         private MenuItem runItem;
         private MenuItem debugItem;
         private MenuItem hideItem;
-        private MenuItem copyAllItem;
         private MenuItem showTimeItem;
         private ContextMenu sharedTreeContextMenu;
         private ContextMenu filesTreeContextMenu;
@@ -140,19 +139,28 @@ namespace StructuredLogViewer.Controls
                 projectGraphTab.Visibility = Visibility.Collapsed;
             }
 
+            // Search Log | Properties and Items | Find in Files
             sharedTreeContextMenu = new ContextMenu();
-            copyAllItem = new MenuItem() { Header = "Copy All" };
-            copyAllItem.Click += (s, a) => CopyAll();
-            sharedTreeContextMenu.Items.Add(copyAllItem);
+            var sharedCopyAllItem = new MenuItem() { Header = "Copy All" };
+            var sharedCopySubtreeItem = new MenuItem() { Header = "Copy subtree" };
+            sharedCopyAllItem.Click += (s, a) => CopyAll();
+            sharedCopySubtreeItem.Click += (s, a) => CopySubtree();
+            sharedTreeContextMenu.Items.Add(sharedCopyAllItem);
+            sharedTreeContextMenu.Items.Add(sharedCopySubtreeItem);
 
+            // Files
             filesTreeContextMenu = new ContextMenu();
-            var filesCopyAll = new MenuItem { Header = "Copy All" };
-            filesCopyAll.Click += (s, a) => CopyAll(filesTree.ResultsList);
-            var filesCopyPaths = new MenuItem { Header = "Copy file paths" };
-            filesCopyPaths.Click += (s, a) => CopyPaths(filesTree.ResultsList);
-            filesTreeContextMenu.Items.Add(filesCopyAll);
-            filesTreeContextMenu.Items.Add(filesCopyPaths);
+            var filesCopyAllItem = new MenuItem { Header = "Copy All" };
+            var filesCopyPathsItem = new MenuItem { Header = "Copy file paths" };
+            var filesCopySubtreeItem = new MenuItem { Header = "Copy subtree" };
+            filesCopyAllItem.Click += (s, a) => CopyAll();
+            filesCopyPathsItem.Click += (s, a) => CopyPaths();
+            filesCopySubtreeItem.Click += (s, a) => CopySubtree();
+            filesTreeContextMenu.Items.Add(filesCopyAllItem);
+            filesTreeContextMenu.Items.Add(filesCopyPathsItem);
+            filesTreeContextMenu.Items.Add(filesCopySubtreeItem);
 
+            // Build Log
             var contextMenu = new ContextMenu();
             contextMenu.Opened += ContextMenu_Opened;
             copyItem = new MenuItem() { Header = "Copy" };
@@ -176,7 +184,7 @@ namespace StructuredLogViewer.Controls
             runItem = new MenuItem() { Header = "Run" };
             debugItem = new MenuItem() { Header = "Debug" };
             copyItem.Click += (s, a) => Copy();
-            copySubtreeItem.Click += (s, a) => CopySubtree();
+            copySubtreeItem.Click += (s, a) => CopySubtree(treeView);
             viewSubtreeTextItem.Click += (s, a) => ViewSubtreeText();
             searchInSubtreeItem.Click += (s, a) => SearchInSubtree();
             excludeSubtreeFromSearchItem.Click += (s, a) => ExcludeSubtreeFromSearch();
@@ -318,7 +326,7 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
             var list = filesTree.ResultsList.ItemsSource as IEnumerable<object>;
             if (list != null)
             {
-                UpdateFileVisibility(list.OfType<NamedNode>(), text);
+                UpdateFileVisibility(list.OfType<NamedNode>(), text.Replace(":", ""));
             }
         }
 
@@ -398,7 +406,10 @@ Right-clicking a project node may show the 'Preprocess' option if the version of
         {
             if (this.tracing.Timeline == null)
             {
+                var start = DateTime.Now;
                 var timeline = new Timeline(Build, analyzeCpp: true);
+                var timelineTime = DateTime.Now - start;
+                this.tracing.TimelineTime = timelineTime;
                 this.tracing.BuildControl = this;
                 this.tracing.SetTimeline(timeline, Build.StartTime.Ticks, Build.EndTime.Ticks);
                 this.tracingWatermark.Visibility = Visibility.Hidden;
@@ -1114,6 +1125,8 @@ Recent:
             {
                 searchLogControl.SearchText = InitialSearchText;
             }
+
+            FocusSearch();
         }
 
         public string InitialSearchText { get; set; }
@@ -1250,15 +1263,21 @@ Recent:
             }
         }
 
-        public void CopySubtree()
+        public void CopySubtree(TreeView tree = null)
         {
-            if (treeView.SelectedItem is BaseNode treeNode)
+            tree = tree ?? ActiveTreeView;
+            if (tree == null)
+            {
+                return;
+            }
+
+            if (tree.SelectedItem is BaseNode treeNode)
             {
                 var text = Microsoft.Build.Logging.StructuredLogger.StringWriter.GetString(treeNode);
                 CopyToClipboard(text);
             }
         }
-
+        
         public void ViewSubtreeText()
         {
             if (treeView.SelectedItem is BaseNode treeNode)
@@ -1736,9 +1755,13 @@ Recent:
 
             if (moreAvailable)
             {
+                var count = resultsObject is ICollection<SearchResult> results
+                    ? results.Count
+                    : folder.Children.Count;
+
                 var showAllButton = new ButtonNode
                 {
-                    Text = $"Showing first {folder.Children.Count} results. Show all results instead (slow)."
+                    Text = $"Showing first {count} results. Show all results instead (slow)."
                 };
 
                 showAllButton.OnClick = () =>

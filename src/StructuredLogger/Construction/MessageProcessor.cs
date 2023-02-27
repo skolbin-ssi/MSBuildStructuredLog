@@ -1,10 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
-using System.Reflection;
 using System.Text;
-using Microsoft.Build.Collections;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Internal;
 
@@ -184,7 +181,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 node = CreateParameterNode(itemType, items, isOutput);
             }
             else if (
-                kind == TaskParameterMessageKind.AddItem || 
+                kind == TaskParameterMessageKind.AddItem ||
                 kind == TaskParameterMessageKind.RemoveItem ||
                 kind == TaskParameterMessageKind.SkippedTargetInputs ||
                 kind == TaskParameterMessageKind.SkippedTargetOutputs)
@@ -400,7 +397,11 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 parent = GetTask(args);
                 if (parent is Task task)
                 {
-                    if (task is ResolveAssemblyReferenceTask rar)
+                    if (args is AssemblyLoadBuildEventArgs)
+                    {
+                        nodeToAdd = new Message() { Text = Intern(message), IsLowRelevance = lowRelevance };
+                    }
+                    else if (task is ResolveAssemblyReferenceTask rar)
                     {
                         if (ProcessRAR(rar, ref parent, message))
                         {
@@ -539,8 +540,14 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     buildEventContext.TaskId == 0)
                 {
                     // must be Detailed Build Summary
-                    // https://github.com/dotnet/msbuild/blob/main/src/XMakeBuildEngine/BackEnd/Components/Scheduler/Scheduler.cs#L509
-                    DetailedSummary.AppendLine(message);
+                    // https://github.com/dotnet/msbuild/blob/d797c48da13aaa4dc7ae440ed7603c990cd44317/src/Build/BackEnd/Components/Scheduler/Scheduler.cs#L546
+                    // Make sure to trim it otherwise it takes forever to load for huge builds
+                    // and at that data volume it's just not useful
+                    if (DetailedSummary.Length < 20_000_000)
+                    {
+                        DetailedSummary.AppendLine(message);
+                    }
+
                     return;
                 }
                 else if (
@@ -571,7 +578,24 @@ namespace Microsoft.Build.Logging.StructuredLogger
             else if (nodeToAdd == null)
             {
                 message = Intern(message);
-                if (parent is Task task && CppAnalyzer.IsCppTask(task.Name))
+
+                if (args is CriticalBuildMessageEventArgs criticalArgs)
+                {
+                    var critical = new CriticalBuildMessage();
+                    critical.Text = message;
+                    critical.Timestamp = args.Timestamp;
+                    critical.Code = Intern(criticalArgs.Code);
+                    critical.ColumnNumber = criticalArgs.ColumnNumber;
+                    critical.EndColumnNumber = criticalArgs.EndColumnNumber;
+                    critical.EndLineNumber = criticalArgs.EndLineNumber;
+                    critical.LineNumber = criticalArgs.LineNumber;
+                    critical.File = Intern(criticalArgs.File);
+                    critical.ProjectFile = Intern(criticalArgs.ProjectFile);
+                    critical.Subcategory = Intern(criticalArgs.Subcategory);
+
+                    nodeToAdd = critical;
+                }
+                else if (parent is Task task && task is CppAnalyzer.CppTask)
                 {
                     nodeToAdd = new TimedMessage
                     {
@@ -1009,9 +1033,19 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             // task can be null as per https://github.com/KirillOsenkov/MSBuildStructuredLog/issues/136
             var task = GetTask(args);
-            if (task != null)
+            if (task != null && !string.IsNullOrEmpty(args.CommandLine))
             {
-                task.CommandLineArguments = Intern(args.CommandLine);
+                string commandLine = Intern(args.CommandLine);
+
+                // a ToolTask can issue multiple TaskCommandLineEventArgs if Execute() is called multiple times
+                // see https://github.com/KirillOsenkov/MSBuildStructuredLog/issues/624
+                task.AddChild(new Property { Name = Strings.CommandLineArguments, Value = commandLine });
+
+                if (task.CommandLineArguments == null)
+                {
+                    task.CommandLineArguments = commandLine;
+                }
+
                 return true;
             }
 

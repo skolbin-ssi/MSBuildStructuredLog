@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using StructuredLogViewer;
@@ -34,7 +34,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
             else if (node is Project project)
             {
-                return $"{project.Name} {project.TargetFramework}{project.TargetsDisplayText}";
+                return $"{project.Name} {project.AdornmentString} {project.TargetsDisplayText}";
             }
             else if (node is ProjectEvaluation evaluation)
             {
@@ -182,9 +182,9 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 var result = "";
 
-                if (!string.IsNullOrEmpty(project.TargetFramework))
+                if (!string.IsNullOrEmpty(project.AdornmentString))
                 {
-                    result += " " + project.TargetFramework;
+                    result += " " + project.AdornmentString;
                 }
 
                 if (!string.IsNullOrEmpty(project.TargetsDisplayText))
@@ -240,16 +240,11 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             if (Original is Project project)
             {
-                result = project.ProjectFileExtension;
+                result = string.IsNullOrEmpty(project.ProjectFileExtension) ? "other" : project.ProjectFileExtension;
             }
             else if (Original is ProjectEvaluation evaluation)
             {
-                result = evaluation.ProjectFileExtension;
-            }
-
-            if (result != null && result != ".sln" && result != ".csproj")
-            {
-                result = "other";
+                result = string.IsNullOrEmpty(evaluation.ProjectFileExtension) ? "other" : evaluation.ProjectFileExtension;
             }
 
             return result;

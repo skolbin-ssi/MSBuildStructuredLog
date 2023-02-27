@@ -149,6 +149,15 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 .Replace("{3}", @"(?<File>.*) \((?<Line>\d+),(?<Column>\d+)\)$");
             PropertyReassignmentRegex = new Regex(propertyReassignment, RegexOptions.Compiled | RegexOptions.Singleline);
 
+            // Note: This string is not localized in MSBuild.
+            const string messageIncludeResponseFileString = @$"^Included response file: (?<File>((.:)?[^:\n\r]*?))$";
+            MessageIncludedResponseFile = new Regex(messageIncludeResponseFileString, RegexOptions.Compiled | RegexOptions.Singleline);
+
+            MetaprojectGenerated = GetString("MetaprojectGenerated");
+            string messageMetaprojectGeneratedString = MetaprojectGenerated.Replace(@"{0}", @"(?<File>((.:)?[^:\n\r]*?))");
+
+            MessageMetaprojectGenerated = new Regex(messageMetaprojectGeneratedString, RegexOptions.Compiled | RegexOptions.Singleline);
+
             string taskFoundFromFactory = GetString("TaskFoundFromFactory")
                 .Replace(@"""{0}""", @"\""(?<task>.+)\""")
                 .Replace(@"""{1}""", @"\""(?<assembly>.+)\""");
@@ -246,6 +255,8 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static Regex ProjectImportSkippedExpressionEvaluatedToEmptyRegex { get; set; }
         public static Regex ProjectImportSkippedNoMatchesRegex { get; set; }
         public static Regex PropertyReassignmentRegex { get; set; }
+        public static Regex MessageIncludedResponseFile { get; set; }
+        public static Regex MessageMetaprojectGenerated { get; set; }
         public static Regex UnifiedPrimaryReferencePrefix { get; set; }
         public static Regex PrimaryReferencePrefix { get; set; }
         public static Regex DependencyPrefix { get; set; }
@@ -296,6 +307,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static string ProjectImportSkippedInvalidFile { get; set; }
         public static string ProjectImportSkippedEmptyFile { get; set; }
         public static string TaskSkippedFalseCondition { get; set; }
+        public static string MetaprojectGenerated { get; set; }
 
         public static Match UsingTask(string message)
         {
@@ -458,7 +470,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         public static string Evaluation => "Evaluation";
         public static string Environment => "Environment";
-        public static string NoEnvironment => "Define a value for MSBUILDLOGALLENVIRONMENTVARIABLES to log all environment variables. Only those used in evaluating properties are currently logged.";
+        public static string TruncatedEnvironment => "Starting with MSBuild 17.4, only some environment variables are included in the log: the ones read during the build and the ones prefixed with MSBUILD, DOTNET_ or COMPLUS_.\nDefine MSBUILDLOGALLENVIRONMENTVARIABLES to log all environment variables during the build.";
         public static string Imports => "Imports";
         public static string DetailedSummary => "Detailed summary";
         public static string Parameters => "Parameters";
@@ -473,6 +485,8 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public static string Global => "Global";
         public static string EntryTargets => "Entry targets";
         public static string TargetFramework => "TargetFramework";
+        public static string Platform => "Platform";
+        public static string Configuration => "Configuration";
         public static string TargetFrameworks => "TargetFrameworks";
         public static string TargetFrameworkVersion => "TargetFrameworkVersion";
         public static string AdditionalProperties => "Additional properties";

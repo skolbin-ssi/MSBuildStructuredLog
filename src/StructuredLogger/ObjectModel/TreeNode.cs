@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Microsoft.Build.Logging.StructuredLogger
 {
@@ -54,7 +55,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
             else if (children is ChildrenList list)
             {
-                list.EnsureCapacity(capacity);
+                list.EnsureCapacity(list.Count + capacity);
             }
         }
 
@@ -245,7 +246,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             return default;
         }
 
-        public virtual T FindLastInSubtreeIncludingSelf<T>(Predicate<T> predicate = null)  where T : BaseNode
+        public virtual T FindLastInSubtreeIncludingSelf<T>(Predicate<T> predicate = null) where T : BaseNode
         {
             var child = FindLastDescendant<T>(predicate);
             if (child != null)
@@ -483,6 +484,64 @@ namespace Microsoft.Build.Logging.StructuredLogger
             return foundChildren;
         }
 
+
+        public void ParallelVisitAllChildren<T>(
+            Action<T> processor,
+            CancellationToken cancellationToken = default,
+            bool takeChildrenSnapshot = false) where T : BaseNode
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (this is T typedThis)
+            {
+                processor(typedThis);
+            }
+
+            if (HasChildren)
+            {
+                var list = Children;
+                if (takeChildrenSnapshot)
+                {
+                    list = list.ToArray();
+                }
+
+                void ProcessChild(BaseNode child)
+                {
+                    if (child is TreeNode node)
+                    {
+                        node.ParallelVisitAllChildren(processor, cancellationToken, takeChildrenSnapshot);
+                    }
+                    else if (child is T typedChild)
+                    {
+                        processor(typedChild);
+                    }
+                }
+
+                // A short list is faster on a single thread.
+                // Need more testing to determine the cut off.
+                if (list.Count < Environment.ProcessorCount * 3)
+                {
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            return;
+                        }
+
+                        ProcessChild(list[i]);
+                    }
+                }
+                else
+                {
+                    ParallelOptions po = new ParallelOptions() { CancellationToken = cancellationToken };
+                    Parallel.ForEach(list, po, child => ProcessChild(child));
+                }
+            }
+        }
+
         public void VisitAllChildren<T>(
             Action<T> processor,
             CancellationToken cancellationToken = default,
@@ -524,6 +583,31 @@ namespace Microsoft.Build.Logging.StructuredLogger
                     }
                 }
             }
+        }
+
+        // A breadth first search looking for the first node of type T.
+        public IReadOnlyList<T> FindImmediateChildrenOfType<T>()
+        {
+            Queue<BaseNode> searchQueue = new Queue<BaseNode>(Children);
+            List<T> resultNodes = new List<T>();
+
+            while (searchQueue.Count > 0)
+            {
+                var node = searchQueue.Dequeue();
+                if (node is T tNode)
+                {
+                    resultNodes.Add(tNode);
+                }
+                else if (node is TreeNode treeNode && treeNode.HasChildren)
+                {
+                    foreach (BaseNode child in treeNode.Children)
+                    {
+                        searchQueue.Enqueue(child);
+                    }
+                }
+            }
+
+            return resultNodes;
         }
     }
 }
