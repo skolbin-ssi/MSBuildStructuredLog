@@ -56,17 +56,17 @@ namespace StructuredLogViewer.Controls
                 }
             }
 
-            public bool TryGetTextBlockAtPosition(Point mousePos, out TextField resultText, out Point point)
+            public bool TryGetTextBlockAtPosition(Point mousePos, out TextField resultText, out Point resultPoint)
             {
                 // TODO: Optimize later to avoid a linear search.
-                point = PointZero;
+                resultPoint = PointZero;
                 resultText = null;
 
                 foreach (var text in blocks)
                 {
                     if (text.Position.Contains(mousePos))
                     {
-                        point = new(text.Position.X, text.Position.Y);
+                        resultPoint = new Point(text.Position.X, text.Position.Y);
                         resultText = text;
                         return true;
                     }
@@ -84,6 +84,8 @@ namespace StructuredLogViewer.Controls
         public class TextField
         {
             public string Text { get; set; }
+
+            public string ToolTip { get; set; }
 
             public Rect Position { get; set; }
 
@@ -223,9 +225,30 @@ namespace StructuredLogViewer.Controls
             scaleTransform = new ScaleTransform();
             this.DataContext = this;
             InitializeComponent();
-            this.PreviewMouseWheel += TimelineControl_MouseWheel;
+            PreviewMouseWheel += TimelineControl_MouseWheel;
             grid.LayoutTransform = scaleTransform;
             overlayGrid.LayoutTransform = scaleTransform;
+        }
+
+        public void Dispose()
+        {
+            // WPF controls
+            PreviewMouseWheel -= TimelineControl_MouseWheel;
+            overlayGrid.Children.Clear();
+            grid.Children.Clear();
+
+            lanesPanel?.Children.Clear();
+            lanesPanel = null;
+            overlayCanvas?.Children.Clear();
+            overlayCanvas = null;
+            blocksCollection.Clear();
+            activeTextBlock = null;
+            lastHoverText = null;
+            HeatGraph = null;
+            TopRulerNodeDivider = null;
+            Timeline = null;
+            BuildControl = null;
+            TextBlocks = null;
         }
 
         private double scaleFactor = 1;
@@ -243,6 +266,16 @@ namespace StructuredLogViewer.Controls
         {
             horizontalOffset = scrollViewer.HorizontalOffset;
             verticalOffset = scrollViewer.VerticalOffset;
+        }
+
+        private void ScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (e.HorizontalChange == 0)
+            {
+                return;
+            }
+
+            e.Handled = true;
         }
 
         private void zoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -264,7 +297,6 @@ namespace StructuredLogViewer.Controls
             scaleTransform.ScaleX = scaleFactor;
             scaleTransform.ScaleY = scaleFactor;
 
-            UpdatedGraph(scrollViewer.HorizontalOffset + scrollViewer.ViewportWidth);
             scrollViewer.ScrollToHorizontalOffset(scrollViewer.HorizontalOffset * delta);
             scrollViewer.ScrollToVerticalOffset(scrollViewer.VerticalOffset * delta);
         }
@@ -305,7 +337,6 @@ namespace StructuredLogViewer.Controls
                 double mouseOffsetX = mousePos.X * (1 - delta);
                 double mouseOffsetY = mousePos.Y * (1 - delta);
 
-                UpdatedGraph(scrollViewer.HorizontalOffset + scrollViewer.ViewportWidth);
                 scrollViewer.ScrollToHorizontalOffset(scrollViewer.HorizontalOffset * delta - mouseOffsetX);
                 scrollViewer.ScrollToVerticalOffset(scrollViewer.VerticalOffset * delta - mouseOffsetY);
             }
@@ -315,7 +346,7 @@ namespace StructuredLogViewer.Controls
 
         public BuildControl BuildControl { get; set; }
 
-        public Dictionary<BaseNode, TextField> TextBlocks { get; set; } = new();
+        private Dictionary<BaseNode, TextField> TextBlocks { get; set; } = new();
 
         private DateTime lastClickTimestamp = DateTime.MinValue;
 
@@ -740,13 +771,14 @@ namespace StructuredLogViewer.Controls
                 }
             }
 
+            // Clear highlight when selection failed.
             if (textblock == null && activeTextBlock != null)
             {
                 if (highlight.Parent is Panel parent)
                 {
                     parent.Children.Remove(highlight);
                 }
-
+                activeTextBlock = null;
                 scrollViewer.ScrollToVerticalOffset(0);
                 scrollViewer.ScrollToHorizontalOffset(0);
             }
@@ -917,7 +949,7 @@ namespace StructuredLogViewer.Controls
                 var textBlock = new TextField();
                 textBlock.Text = $"{block.Text} ({TextUtilities.DisplayDuration(block.Duration)})";
                 textBlock.Position = new Rect(left, indentOffset, duration, textHeight);
-                // textBlock.ToolTip = block.GetTooltip();
+                textBlock.ToolTip = block.GetTooltip();
                 textBlock.Block = block;
                 TextBlocks.Add(block.Node, textBlock);
 
@@ -941,34 +973,6 @@ namespace StructuredLogViewer.Controls
                 {
                     canvas.AddChildren(textBlock);
                 }
-            }
-        }
-
-        private void UpdatedGraph(double widthOffset)
-        {
-            // Load more blocks when scroll to the right.
-            var renderWidthTimeStamp = GlobalStartTime + ConvertPixelToTime(widthOffset / scaleTransform.ScaleX);
-            if (lastRenderTimeStamp > renderWidthTimeStamp)
-            {
-                return;
-            }
-
-            if (lanesPanel != null)
-            {
-                foreach (var lane in lanesPanel.Children)
-                {
-                    if (lane is FastCanvas canvas && canvas.Name.StartsWith("node"))
-                    {
-                        if (Int32.TryParse(canvas.Name.Substring("node".Length), out int parsedInt))
-                        {
-                            var blocks = blocksCollection[parsedInt];
-                            var culledBlocks = blocks.Where(block => !(lastRenderTimeStamp > block.Start || block.Start >= renderWidthTimeStamp));
-                            UpdatePanelForLane(canvas, culledBlocks);
-                        }
-                    }
-                }
-
-                lastRenderTimeStamp = renderWidthTimeStamp;
             }
         }
 
@@ -1114,8 +1118,8 @@ namespace StructuredLogViewer.Controls
         private void ScrollToElement(TextField hit)
         {
             Point p = GetTextBlockToOverlayGrid(hit);
-            horizontalOffset = p.X > 20 ? p.X - 20 : p.X;
-            verticalOffset = p.Y > 20 ? p.Y - 20 : p.Y;
+            horizontalOffset = (p.X > 20 ? p.X - 20 : p.X) * scaleTransform.ScaleX;
+            verticalOffset = (p.Y > 20 ? p.Y - 20 : p.Y) * scaleTransform.ScaleY;
 
             horizontalOffset = Math.Max(horizontalOffset, 0);
             verticalOffset = Math.Max(verticalOffset, 0);
@@ -1124,8 +1128,17 @@ namespace StructuredLogViewer.Controls
             scrollViewer.ScrollToVerticalOffset(verticalOffset);
         }
 
-        private void Canvas_MouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        private bool isMouseMoving;
+        private Point lastMousePos;
+
+        private void Canvas_MouseUp(object sender, MouseButtonEventArgs e)
         {
+            if (isMouseMoving)
+            {
+                isMouseMoving = false;
+                return;
+            }
+
             if (sender is FastCanvas canvas)
             {
                 var mousePos = e.GetPosition(canvas);
@@ -1141,6 +1154,77 @@ namespace StructuredLogViewer.Controls
                         lastClickTimestamp = Timestamp;
                         var activePoint = canvas.TranslatePoint(point, overlayCanvas);
                         HighlightTextBlock(textBlock, activePoint);
+                        BuildControl.UpdateBreadcrumb(block.Node);
+                    }
+                }
+            }
+        }
+
+        private void Grid_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            lastMousePos = Mouse.GetPosition(this);
+        }
+
+        private void Grid_MouseMove(object sender, MouseEventArgs e)
+        {
+            var currentMousePos = e.GetPosition(this);
+
+            // Handle the case where mouse up isn't sent when released outside of client space.
+            if (e.LeftButton == MouseButtonState.Released)
+            {
+                if (isMouseMoving)
+                {
+                    isMouseMoving = false;
+                }
+                else
+                {
+                    UpdateToolTips(currentMousePos);
+                }
+
+                return;
+            }
+
+            var vect = Point.Subtract(lastMousePos, currentMousePos);
+            if (isMouseMoving || vect.Length > 5)
+            {
+                isMouseMoving = true;
+                scrollViewer.ScrollToHorizontalOffset(scrollViewer.HorizontalOffset + vect.X);
+                scrollViewer.ScrollToVerticalOffset(scrollViewer.VerticalOffset + vect.Y);
+                lastMousePos = currentMousePos;
+            }
+        }
+
+        TextField lastHoverText;
+
+        private void UpdateToolTips(Point mousePos)
+        {
+            var graphPoint = this.TranslatePoint(mousePos, overlayCanvas);
+            var hitResult = VisualTreeHelper.HitTest(this.lanesPanel, graphPoint);
+
+            if (hitResult?.VisualHit is FastCanvas canvas)
+            {
+                var canvasPoint = this.TranslatePoint(mousePos, canvas);
+                if (canvas.TryGetTextBlockAtPosition(canvasPoint, out TextField resultText, out Point _))
+                {
+                    canvas.ToolTip ??= new ToolTip()
+                    {
+                        // Offset by 1 to allow click through to the bottem element
+                        HorizontalOffset = 1,
+                        VerticalOffset = 1
+                    };
+
+                    if (resultText != lastHoverText)
+                    {
+                        var toolTipControl = canvas.ToolTip as ToolTip;
+                        toolTipControl.Content = resultText.ToolTip;
+                        lastHoverText = resultText;
+
+                        // Toggle tooltip to force it to redraw at the new mouse position.
+                        if (toolTipControl.IsOpen)
+                        {
+                            toolTipControl.IsOpen = false;
+                            toolTipControl.IsOpen = true;
+                        }
                     }
                 }
             }
@@ -1176,18 +1260,6 @@ namespace StructuredLogViewer.Controls
         private void ResetZoom_Click(object sender, RoutedEventArgs e)
         {
             zoomSlider.Value = 1;
-            UpdatedGraph(scrollViewer.HorizontalOffset + scrollViewer.ViewportWidth);
-        }
-
-        private void ScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
-        {
-            if (e.HorizontalChange == 0)
-            {
-                return;
-            }
-
-            UpdatedGraph(e.HorizontalOffset + e.ViewportWidth);
-            e.Handled = true;
         }
     }
 }

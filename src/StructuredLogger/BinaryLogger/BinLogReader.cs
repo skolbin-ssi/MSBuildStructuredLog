@@ -66,80 +66,153 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             OnFileFormatVersionRead?.Invoke(fileFormatVersion);
 
+            EnsureFileFormatVersionKnown(fileFormatVersion);
+
+            if (PlatformUtilities.HasThreads)
+            {
+                // Use a producer-consumer queue so that IO can happen on one thread
+                // while processing can happen on another thread decoupled. The speed
+                // up is from 4.65 to 4.15 seconds.
+
+                // see issue https://github.com/KirillOsenkov/MSBuildStructuredLog/issues/684
+                var maxBoundedCapacity = 50000;
+
+                var queue = new BlockingCollection<BuildEventArgs>(boundedCapacity: maxBoundedCapacity);
+                var processingTask = System.Threading.Tasks.Task.Run(() =>
+                {
+                    foreach (var args in queue.GetConsumingEnumerable())
+                    {
+                        Dispatch(args);
+                    }
+                });
+
+                int recordsRead = 0;
+
+                using var reader = new BuildEventArgsReader(binaryReader, fileFormatVersion);
+                reader.OnBlobRead += OnBlobRead;
+
+                Stopwatch stopwatch = Stopwatch.StartNew();
+
+                var streamLength = stream.Length;
+
+                while (true)
+                {
+                    BuildEventArgs instance = null;
+
+                    try
+                    {
+                        instance = reader.Read();
+                    }
+                    catch (Exception ex)
+                    {
+                        OnException?.Invoke(ex);
+                    }
+
+                    recordsRead++;
+                    if (instance == null)
+                    {
+                        queue.CompleteAdding();
+                        break;
+                    }
+
+                    queue.Add(instance);
+
+                    if (progress != null && stopwatch.ElapsedMilliseconds > 200)
+                    {
+                        stopwatch.Restart();
+                        var streamPosition = stream.Position;
+                        double ratio = (double)streamPosition / streamLength;
+                        progress.Report(ratio);
+                    }
+                }
+
+                processingTask.Wait();
+                if (fileFormatVersion >= 10)
+                {
+                    var strings = reader.GetStrings();
+                    if (strings != null && strings.Any())
+                    {
+                        OnStringDictionaryComplete?.Invoke(strings);
+                    }
+                }
+            }
+            else
+            {
+                var queue = new List<BuildEventArgs>();
+
+                int recordsRead = 0;
+
+                using var reader = new BuildEventArgsReader(binaryReader, fileFormatVersion);
+                reader.OnBlobRead += OnBlobRead;
+
+                Stopwatch stopwatch = Stopwatch.StartNew();
+
+                var streamLength = stream.Length;
+
+                while (true)
+                {
+                    BuildEventArgs instance = null;
+
+                    try
+                    {
+                        instance = reader.Read();
+                    }
+                    catch (Exception ex)
+                    {
+                        OnException?.Invoke(ex);
+                    }
+
+                    recordsRead++;
+                    if (instance == null)
+                    {
+                        break;
+                    }
+
+                    queue.Add(instance);
+
+                    if (progress != null && stopwatch.ElapsedMilliseconds > 200)
+                    {
+                        stopwatch.Restart();
+                        var streamPosition = stream.Position;
+                        double ratio = (double)streamPosition / streamLength;
+                        progress.Report(ratio);
+                    }
+                }
+
+                foreach (var args in queue)
+                {
+                    Dispatch(args);
+                }
+                if (fileFormatVersion >= 10)
+                {
+                    var strings = reader.GetStrings();
+                    if (strings != null && strings.Any())
+                    {
+                        OnStringDictionaryComplete?.Invoke(strings);
+                    }
+                }
+            }
+
+
+            if (progress != null)
+            {
+                progress.Report(1.0);
+            }
+        }
+
+        private void EnsureFileFormatVersionKnown(int fileFormatVersion)
+        {
             // the log file is written using a newer version of file format
             // that we don't know how to read
             if (fileFormatVersion > BinaryLogger.FileFormatVersion)
             {
                 var text = $"Unsupported log file format. Latest supported version is {BinaryLogger.FileFormatVersion}, the log file has version {fileFormatVersion}.";
+                if (BinaryLogger.IsNewerVersionAvailable)
+                {
+                    text += " Update available - restart this instance to automatically use newer version.";
+                }
+
                 throw new NotSupportedException(text);
-            }
-
-            // Use a producer-consumer queue so that IO can happen on one thread
-            // while processing can happen on another thread decoupled. The speed
-            // up is from 4.65 to 4.15 seconds.
-            var queue = new BlockingCollection<BuildEventArgs>(boundedCapacity: 5000);
-            var processingTask = System.Threading.Tasks.Task.Run(() =>
-            {
-                foreach (var args in queue.GetConsumingEnumerable())
-                {
-                    Dispatch(args);
-                }
-            });
-
-            int recordsRead = 0;
-
-            using var reader = new BuildEventArgsReader(binaryReader, fileFormatVersion);
-            reader.OnBlobRead += OnBlobRead;
-
-            Stopwatch stopwatch = Stopwatch.StartNew();
-
-            var streamLength = stream.Length;
-
-            while (true)
-            {
-                BuildEventArgs instance = null;
-
-                try
-                {
-                    instance = reader.Read();
-                }
-                catch (Exception ex)
-                {
-                    OnException?.Invoke(ex);
-                }
-
-                recordsRead++;
-                if (instance == null)
-                {
-                    queue.CompleteAdding();
-                    break;
-                }
-
-                queue.Add(instance);
-
-                if (progress != null && recordsRead % 1000 == 0 && stopwatch.ElapsedMilliseconds > 200)
-                {
-                    stopwatch.Restart();
-                    var streamPosition = stream.Position;
-                    double ratio = (double)streamPosition / streamLength;
-                    progress.Report(ratio);
-                }
-            }
-
-            processingTask.Wait();
-
-            if (fileFormatVersion >= 10)
-            {
-                var strings = reader.GetStrings();
-                if (strings != null && strings.Any())
-                {
-                    OnStringDictionaryComplete?.Invoke(strings);
-                }
-            }
-
-            if (progress != null)
-            {
-                progress.Report(1.0);
             }
         }
 
@@ -210,13 +283,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             int fileFormatVersion = binaryReader.ReadInt32();
 
-            // the log file is written using a newer version of file format
-            // that we don't know how to read
-            if (fileFormatVersion > BinaryLogger.FileFormatVersion)
-            {
-                var text = $"Unsupported log file format. Latest supported version is {BinaryLogger.FileFormatVersion}, the log file has version {fileFormatVersion}.";
-                throw new NotSupportedException(text);
-            }
+            EnsureFileFormatVersionKnown(fileFormatVersion);
 
             long lengthOfBlobsAddedLastTime = 0;
 
@@ -313,10 +380,10 @@ namespace Microsoft.Build.Logging.StructuredLogger
         public override long Length => stream.Length;
 
         private long position;
-        public override long Position 
+        public override long Position
         {
-            get => position; 
-            set => throw new NotImplementedException(); 
+            get => position;
+            set => throw new NotImplementedException();
         }
 
         public override void Flush()
