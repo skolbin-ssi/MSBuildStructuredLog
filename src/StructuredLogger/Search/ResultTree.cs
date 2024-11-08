@@ -8,7 +8,12 @@ namespace StructuredLogViewer
 {
     public class ResultTree
     {
-        public static Folder BuildResultTree(object resultsObject, bool moreAvailable = false, TimeSpan elapsed = default)
+        public static Folder BuildResultTree(
+            object resultsObject,
+            TimeSpan elapsed = default,
+            TimeSpan precalculationDuration = default,
+            bool addDuration = true,
+            Func<BaseNode> addWhenNoResults = null)
         {
             var root = new Folder();
 
@@ -18,14 +23,31 @@ namespace StructuredLogViewer
                 return root;
             }
 
-            root.Children.Add(new Message
+            string durationString = TextUtilities.DisplayDuration(elapsed);
+            if (!string.IsNullOrEmpty(durationString))
             {
-                Text = $"{results.Count} result{(results.Count == 1 ? "" : "s")}. Search took: {elapsed.ToString()}"
-            });
+                durationString = $" Search took: {durationString}";
+            }
+
+            string status = $"{results.Count} result{(results.Count == 1 ? "" : "s")}.{durationString}";
+            string precalculationString = TextUtilities.DisplayDuration(precalculationDuration);
+            if (!string.IsNullOrWhiteSpace(precalculationString))
+            {
+                status += $" (precalculation: {precalculationString})";
+            }
+
+            if (addDuration)
+            {
+                root.Children.Add(new Note
+                {
+                    Text = status
+                });
+            }
 
             bool includeDuration = false;
             bool includeStart = false;
             bool includeEnd = false;
+            bool nest = !includeDuration && !includeStart && !includeEnd;
 
             foreach (var r in results)
             {
@@ -57,7 +79,7 @@ namespace StructuredLogViewer
 
                 root.Children.Add(new Message
                 {
-                    Text = $"Total duration: {totalDuration}"
+                    Text = $"Total duration: {TextUtilities.DisplayDuration(totalDuration)}"
                 });
             }
             else if (includeStart)
@@ -69,58 +91,91 @@ namespace StructuredLogViewer
                 results = results.OrderBy(r => r.EndTime).ToArray();
             }
 
+            var nodeToProxyMap = new Dictionary<BaseNode, BaseNode>();
+
+            foreach (var result in results)
+            {
+                var resultNode = result.Node;
+                if (resultNode != null && resultNode.Parent != null)
+                {
+                    var proxy = new ProxyNode();
+                    proxy.Original = resultNode;
+                    proxy.SearchResult = result;
+                    if (resultNode is IHasRelevance relevance)
+                    {
+                        proxy.IsLowRelevance = relevance.IsLowRelevance;
+                    }
+
+                    proxy.Text = ProxyNode.GetNodeText(resultNode);
+                    nodeToProxyMap[resultNode] = proxy;
+                }
+            }
+
+            // We don't want to reuse nodes created for a result under a particular rootFolderName,
+            // such as Incoming and Outgoing for file copies. We do want to reuse the proxies for
+            // actual results as well as reuse nodes under each rootFolderName.
+            Dictionary<string, Dictionary<BaseNode, BaseNode>> perRootFolderProxyCache = new();
+
             foreach (var result in results)
             {
                 TreeNode parent = root;
                 var resultNode = result.Node;
 
-                bool isProject = resultNode is Project;
-                bool isTarget = resultNode is Target;
+                var map = nodeToProxyMap;
 
-                if (!includeDuration && !includeStart && !includeEnd && !isProject)
+                if (nest && resultNode != null && resultNode is not Project && resultNode.Parent != null)
                 {
+                    if (result.RootFolder is string rootFolderName)
+                    {
+                        parent = InsertParent(
+                            map: null,
+                            parent,
+                            actualParent: null,
+                            name: rootFolderName);
+
+                        // create a dictionary specific for this rootFolderName based on the base dictionary
+                        if (!perRootFolderProxyCache.TryGetValue(rootFolderName, out map))
+                        {
+                            map = new Dictionary<BaseNode, BaseNode>(nodeToProxyMap);
+                            perRootFolderProxyCache[rootFolderName] = map;
+                        }
+                    }
+
                     var project = resultNode.GetNearestParent<Project>();
                     if (project != null)
                     {
-                        var projectName = ProxyNode.GetNodeText(project);
-                        parent = InsertParent(
-                            parent,
-                            project,
-                            projectName,
-                            existingProxy => existingProxy.Original is Project existing &&
-                                string.Equals(existing.SourceFilePath, project.SourceFilePath, StringComparison.OrdinalIgnoreCase));
+                        parent = InsertParent(map, parent, project);
                     }
-
-                    if (project == null)
+                    else
                     {
                         var evaluation = resultNode.GetNearestParent<ProjectEvaluation>();
                         if (evaluation != null)
                         {
-                            parent = InsertParent(parent, evaluation.Parent as TimedNode, Strings.Evaluation);
-
-                            var evaluationName = ProxyNode.GetNodeText(evaluation);
-                            parent = InsertParent(parent, evaluation, evaluationName);
+                            parent = InsertParent(map, parent, evaluation.Parent as TimedNode);
+                            parent = InsertParent(map, parent, evaluation);
                         }
                     }
+
+                    bool isTarget = resultNode is Target;
 
                     var target = resultNode.GetNearestParent<Target>();
                     if (!isTarget && project != null && target != null && target.Project == project)
                     {
-                        parent = InsertParent(parent, target, target.TypeName + " " + target.Name);
+                        parent = InsertParent(map, parent, target);
                     }
 
                     // nest under a Task, unless it's an MSBuild task higher up the parent chain
-                    var task = resultNode.GetNearestParent<Task>(t => !string.Equals(t.Name, "MSBuild", StringComparison.OrdinalIgnoreCase));
+                    var task = resultNode.GetNearestParent<Task>(t => t is not MSBuildTask);
                     if (task != null && !isTarget && project != null && task.GetNearestParent<Project>() == project)
                     {
-                        parent = InsertParent(parent, task, "Task " + task.Name);
+                        parent = InsertParent(map, parent, task);
                     }
 
                     if (resultNode is Item item &&
                         item.Parent is NamedNode itemParent &&
                         (itemParent is Folder || itemParent is AddItem || itemParent is RemoveItem))
                     {
-                        parent = InsertParent(parent, itemParent);
+                        parent = InsertParent(map, parent, itemParent);
                     }
 
                     if (resultNode is Metadata metadata &&
@@ -128,32 +183,48 @@ namespace StructuredLogViewer
                         parentItem.Parent is NamedNode grandparent &&
                         (grandparent is Folder || grandparent is AddItem || grandparent is RemoveItem))
                     {
-                        parent = InsertParent(parent, grandparent);
-                        parent = InsertParent(parent, parentItem, parentItem.Text);
+                        parent = InsertParent(map, parent, grandparent);
+                        parent = InsertParent(map, parent, parentItem);
                     }
                 }
 
-                var proxy = new ProxyNode();
-                proxy.Original = resultNode;
-                proxy.SearchResult = result;
-                parent.Children.Add(proxy);
+                if (resultNode == null || resultNode.Parent != null)
+                {
+                    if (map.TryGetValue(resultNode, out var existing))
+                    {
+                        resultNode = existing;
+                    }
+                    else
+                    {
+                        var proxy = new ProxyNode();
+                        proxy.Original = resultNode;
+                        proxy.SearchResult = result;
+                        proxy.Text = ProxyNode.GetNodeText(resultNode);
+
+                        resultNode = proxy;
+                    }
+                }
+
+                parent.Children.Add(resultNode);
             }
 
-            if (!root.HasChildren)
+            if (!root.HasChildren && addWhenNoResults != null)
             {
-                root.Children.Add(new Message { Text = "No results found." });
+                var node = addWhenNoResults();
+                root.Children.Add(node);
             }
 
             return root;
         }
 
         private static TreeNode InsertParent(
+            Dictionary<BaseNode, BaseNode> map,
             TreeNode parent,
             NamedNode actualParent,
             string name = null,
             Func<ProxyNode, bool> existingNodeFinder = null)
         {
-            name ??= actualParent.Name;
+            name ??= ProxyNode.GetNodeText(actualParent);
 
             ProxyNode folderProxy = null;
 
@@ -170,21 +241,29 @@ namespace StructuredLogViewer
 
                 if (folderProxy == null)
                 {
-                    folderProxy = new ProxyNode { Name = name };
+                    folderProxy = new ProxyNode { Text = name };
                     parent.AddChild(folderProxy);
+                }
+            }
+
+            if (map != null)
+            {
+                if (map.TryGetValue(actualParent, out var result) && result is ProxyNode found)
+                {
+                    folderProxy = found;
                 }
             }
 
             if (folderProxy == null)
             {
-                folderProxy = parent.GetOrCreateNodeWithName<ProxyNode>(name);
+                folderProxy = parent.GetOrCreateNodeWithText<ProxyNode>(name);
+                if (map != null)
+                {
+                    map[actualParent] = folderProxy;
+                }
             }
 
             folderProxy.Original = actualParent;
-            if (folderProxy.Highlights.Count == 0)
-            {
-                folderProxy.Highlights.Add(name);
-            }
 
             folderProxy.IsExpanded = true;
             return folderProxy;

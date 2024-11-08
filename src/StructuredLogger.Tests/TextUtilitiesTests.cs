@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Build.Logging.StructuredLogger;
+using StructuredLogViewer;
 using Xunit;
 
 namespace StructuredLogger.Tests
@@ -65,12 +66,27 @@ namespace StructuredLogger.Tests
             Assert.Equal(8, new Span(1, 10).Skip(2).Length);
         }
 
+        [Theory]
+        [InlineData(null, null)]
+        [InlineData("", "")]
+        [InlineData("\"\"", "")]
+        [InlineData("\"a\"", "a")]
+        [InlineData("\"a\"\"", "a\"")]
+        [InlineData("\"\"a\"", "\"a")]
+        [InlineData("\"\"a\"\"", "\"a\"")]
+        [InlineData("\"a\" ", "\"a\" ")]
+        public void TestTrimQuotes(string original, string expected)
+        {
+            var actual = original.TrimQuotes();
+            Assert.Equal(expected, actual);
+        }
+
         [Fact]
         public void TestStringOperations()
         {
             var text = "abcd   efghi";
             Assert.Equal("   efg", text.Substring(new Span(4, 6)));
-            Assert.Equal(true, text.Contains(new Span(7, 4), 'e'));
+            Assert.True(text.Contains(new Span(7, 4), 'e'));
             Assert.Equal(7, text.IndexOf(new Span(7, 4), 'e'));
         }
 
@@ -163,6 +179,28 @@ namespace StructuredLogger.Tests
         public void TestDisplayDuration(int duration, string expected)
         {
             var actual = TextUtilities.DisplayDuration(TimeSpan.FromMilliseconds(duration));
+            Assert.Equal(expected, actual);
+        }
+
+        [Theory]
+        [InlineData(@"C:\a\b.txt", @"C:\a\b.txt")]
+        [InlineData(@"C:\a\..\b.txt", @"C:\b.txt")]
+        [InlineData(@"C:\a\b\..\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:\a\b\\..\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:\\a\b\..\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:\a\b\..\\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:\a\b\..\/c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:\a\b/..\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:\a/b\..\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:/a\b\..\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"C:/a\b//..\c.txt", @"C:\a\c.txt")]
+        [InlineData(@"\a\b\c.txt", @"/a/b/c.txt")]
+        [InlineData(@"\a\\b\c.txt", @"/a/b/c.txt")]
+        [InlineData(@"\\a\b\c.txt", @"\\a\b\c.txt")]
+        [InlineData(@"\a\..\c.txt", @"/c.txt")]
+        public void TestNormalizePath(string path, string expected)
+        {
+            var actual = TextUtilities.NormalizeFilePath(path);
             Assert.Equal(expected, actual);
         }
     }

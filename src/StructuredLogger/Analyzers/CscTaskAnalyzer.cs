@@ -15,7 +15,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
             Folder currentReport = null;
             Folder parent = null;
 
-            foreach (var message in task.Children.OfType<Message>().ToArray())
+            foreach (var message in task.GetMessages().ToArray())
             {
                 var text = message.Text;
                 if (text.StartsWith(Strings.TotalAnalyzerExecutionTime, StringComparison.Ordinal))
@@ -83,10 +83,19 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             foreach (var data in assemblyData.OrderByDescending(data => data.Value.TotalTime))
             {
-                var folder = new Folder { Name = $"{TextUtilities.DisplayDuration(data.Value.TotalTime, showZero: true)}   {data.Value.Name}" };
-                foreach (var analyzer in data.Value.AnalyzerTimes.OrderByDescending(analyzer => analyzer.Value).ThenBy(analyzer => analyzer.Key, StringComparer.OrdinalIgnoreCase))
+                var folder = new Folder
                 {
-                    folder.AddChild(new Item { Name = analyzer.Key, Text = TextUtilities.DisplayDuration(analyzer.Value, showZero: true) });
+                    Name = $"{TextUtilities.DisplayDuration(data.Value.TotalTime, showZero: true)}   {data.Value.Name}"
+                };
+
+                foreach (var analyzer in data.Value.AnalyzerTimes
+                    .OrderByDescending(analyzer => analyzer.Value)
+                    .ThenBy(analyzer => analyzer.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    folder.AddChild(new Item
+                    {
+                        Text = analyzer.Key + " = " + TextUtilities.DisplayDuration(analyzer.Value, showZero: true)
+                    });
                 }
 
                 destination.AddChild(folder);

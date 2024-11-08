@@ -4,6 +4,8 @@ namespace Microsoft.Build.Logging.StructuredLogger
 {
     public class StringWriter
     {
+        public static int MaxStringLength = 100_000_000;
+
         public static string GetString(BaseNode rootNode)
         {
             var sb = new StringBuilder();
@@ -13,23 +15,25 @@ namespace Microsoft.Build.Logging.StructuredLogger
             return sb.ToString();
         }
 
-        private static void WriteNode(BaseNode rootNode, StringBuilder sb, int indent = 0)
+        private static void WriteNode(BaseNode node, StringBuilder sb, int indent = 0)
         {
-            if (rootNode == null)
+            if (node == null)
+            {
+                return;
+            }
+
+            if (sb.Length > MaxStringLength)
             {
                 return;
             }
 
             Indent(sb, indent);
-            var text = rootNode.ToString() ?? "";
 
-            // when we ingest strings we normalize on \n to save space.
-            // when the strings leave our app via clipboard, bring \r\n back so that notepad works
-            text = text.Replace("\n", "\r\n");
+            var text = node.GetFullText();
 
             sb.AppendLine(text);
 
-            var treeNode = rootNode as TreeNode;
+            var treeNode = node as TreeNode;
             if (treeNode != null && treeNode.HasChildren)
             {
                 foreach (var child in treeNode.Children)

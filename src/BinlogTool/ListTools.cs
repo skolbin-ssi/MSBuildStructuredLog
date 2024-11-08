@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -6,11 +6,11 @@ using Microsoft.Build.Logging.StructuredLogger;
 
 namespace BinlogTool
 {
-    public class ListTools
+    public class ListTools : BinlogToolCommandBase
     {
         public void Run(string binLogFilePath)
         {
-            var build = BinaryLog.ReadBuild(binLogFilePath);
+            var build = this.ReadBuild(binLogFilePath);
             BuildAnalyzer.AnalyzeBuild(build);
             var strings = build.StringTable.Instances.OrderBy(s => s).ToArray();
 
@@ -48,7 +48,7 @@ namespace BinlogTool
                 return null;
             }
 
-            var sourceCommitId = environment.FindChild<Property>(p => p.Name == "SOURCECOMMITID");
+            var sourceCommitId = environment.FindChild<Property>(static p => p.Name == "SOURCECOMMITID");
             if (sourceCommitId != null)
             {
                 return sourceCommitId.Value;
@@ -83,7 +83,7 @@ namespace BinlogTool
 
             if (task.Name == "Exec")
             {
-                var args = task.FindChild<Property>(p => p.Name == "CommandLineArguments");
+                var args = task.FindChild<Property>(static p => p.Name == "CommandLineArguments");
                 string arguments = null;
 
                 if (args == null)
@@ -91,7 +91,7 @@ namespace BinlogTool
                     var parameters = task.FindChild<Folder>("Parameters");
                     if (parameters != null)
                     {
-                        var command = parameters.FindChild<Property>(p => p.Name == "Command");
+                        var command = parameters.FindChild<Property>(static p => p.Name == "Command");
                         if (command != null)
                         {
                             arguments = command.Value;
@@ -124,7 +124,7 @@ namespace BinlogTool
                 return null;
             }
 
-            var assembly = task.FindChild<Property>(p => p.Name == "Assembly");
+            var assembly = task.FindChild<Property>(static p => p.Name == "Assembly");
             if (assembly == null)
             {
                 return null;
@@ -141,7 +141,7 @@ namespace BinlogTool
                 return null;
             }
 
-            var versionMessage = task.FindChild<Message>(m => m.Text is string message &&
+            var versionMessage = task.FindChild<Message>(static m => m.Text is string message &&
                 message.Length < 200 &&
                 !message.Contains("\n") &&
                 !message.Contains("Leaving it untouched") &&

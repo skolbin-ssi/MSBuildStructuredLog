@@ -5,6 +5,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,6 +15,7 @@ using System.Windows.Threading;
 using Microsoft.Build.Logging.StructuredLogger;
 using Microsoft.Win32;
 using Squirrel;
+using StructuredLogger.Utils;
 using StructuredLogViewer.Controls;
 
 namespace StructuredLogViewer
@@ -31,16 +34,97 @@ namespace StructuredLogViewer
 
         public MainWindow()
         {
+            AppDomain.CurrentDomain.FirstChanceException += CurrentDomain_FirstChanceException;
+
             InitializeComponent();
+
             var uri = new Uri("StructuredLogViewer;component/themes/Generic.xaml", UriKind.Relative);
             var generic = new ResourceDictionary { Source = uri };
             Application.Current.Resources.MergedDictionaries.Add(generic);
 
+            SourceInitialized += MainWindow_SourceInitialized;
             Loaded += MainWindow_Loaded;
             Drop += MainWindow_Drop;
+            Closing += MainWindow_Closing;
 
             ThemeManager.UseDarkTheme = SettingsService.UseDarkTheme;
             ThemeManager.UpdateTheme();
+        }
+
+        private bool exceptionReentrancyGuard;
+
+        private void CurrentDomain_FirstChanceException(object sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs e)
+        {
+            if (exceptionReentrancyGuard)
+            {
+                return;
+            }
+
+            try
+            {
+                exceptionReentrancyGuard = true;
+                var exception = e.Exception;
+                if (exception == null)
+                {
+                    return;
+                }
+
+                exception = ExceptionHandler.Unwrap(exception);
+
+                if (ShouldIgnore(exception))
+                {
+                    return;
+                }
+
+                string message = exception.Message;
+                ExceptionText = message;
+                ErrorReporting.ReportException(exception);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                exceptionReentrancyGuard = false;
+            }
+        }
+
+        private bool ShouldIgnore(Exception exception)
+        {
+            var toString = exception.ToString();
+
+            if (exception is NullReferenceException)
+            {
+                // known first-chance exception in Squirrel
+                if (toString.Contains("at Squirrel.UpdateManager.ApplyReleasesImpl.<unshimOurselves>b__13_0(RegistryView view)"))
+                {
+                    return true;
+                }
+            }
+            else if (exception is FileNotFoundException)
+            {
+                if (toString.Contains(".betaId"))
+                {
+                    return true;
+                }
+            }
+            else if (exception is OperationCanceledException or AggregateException or TargetInvocationException)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private void MainWindow_SourceInitialized(object sender, EventArgs e)
+        {
+            WindowPosition.RestoreWindowPosition(this, SettingsService.WindowPosition);
+        }
+
+        private void MainWindow_Closing(object sender, CancelEventArgs e)
+        {
+            var windowPosition = WindowPosition.GetWindowPosition(this);
+            SettingsService.WindowPosition = windowPosition;
         }
 
         protected override void OnPreviewMouseWheel(MouseWheelEventArgs e)
@@ -104,6 +188,11 @@ namespace StructuredLogViewer
 
             text = text.TrimStart('"').TrimEnd('"');
 
+            if (!text.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
             // only open a file from clipboard if it's not listed in the recent files
             var recentFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             recentFiles.UnionWith(SettingsService.GetRecentLogFiles());
@@ -119,16 +208,23 @@ namespace StructuredLogViewer
 
         private string GetSingleFileFromClipboard()
         {
-            if (Clipboard.ContainsFileDropList())
+            try
             {
-                var fileDropList = Clipboard.GetFileDropList();
-                if (fileDropList.Count == 1)
+                if (Clipboard.ContainsFileDropList())
                 {
-                    return fileDropList[0];
+                    var fileDropList = Clipboard.GetFileDropList();
+                    if (fileDropList.Count == 1)
+                    {
+                        return fileDropList[0];
+                    }
                 }
-            }
 
-            return Clipboard.GetText();
+                return Clipboard.GetText();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void DisplayWelcomeScreen(string message = "")
@@ -280,6 +376,11 @@ namespace StructuredLogViewer
                 return false;
             }
 
+            if (PathUtils.HasInvalidVolumeSeparator(filePath))
+            {
+                return false;
+            }
+
             if (!File.Exists(filePath))
             {
                 return false;
@@ -374,11 +475,13 @@ namespace StructuredLogViewer
             {
                 ReloadMenu.Visibility = logFilePath != null ? Visibility.Visible : Visibility.Collapsed;
                 SaveAsMenu.Visibility = Visibility.Visible;
+                RedactSecretsMenu.Visibility = Visibility.Visible;
             }
             else
             {
                 ReloadMenu.Visibility = Visibility.Collapsed;
                 SaveAsMenu.Visibility = Visibility.Collapsed;
+                RedactSecretsMenu.Visibility = Visibility.Collapsed;
             }
 
             // If we had text inside search log control bring it back
@@ -439,9 +542,13 @@ namespace StructuredLogViewer
                 return;
             }
 
+            long allocatedBefore = AppDomain.CurrentDomain.MonitoringTotalAllocatedMemorySize;
+
             DisplayBuild(null);
+
             this.logFilePath = filePath;
             SettingsService.AddRecentLogFile(filePath);
+            Build.IgnoreEmbeddedFiles = SettingsService.IgnoreEmbeddedFiles;
             UpdateRecentItemsMenu();
             Title = filePath + " - " + DefaultTitle;
 
@@ -451,6 +558,13 @@ namespace StructuredLogViewer
                 Dispatcher.InvokeAsync(() =>
                 {
                     progress.Value = update.Ratio;
+                    string bufferText = null;
+                    if (update.BufferLength > 0)
+                    {
+                        bufferText = $"Buffer length: {update.BufferLength:n0}";
+                    }
+
+                    progress.BufferText = bufferText;
                 }, DispatcherPriority.Background);
             };
             progress.ProgressText = "Opening " + filePath + "...";
@@ -459,12 +573,13 @@ namespace StructuredLogViewer
             bool shouldAnalyze = true;
 
             var stopwatch = Stopwatch.StartNew();
+            var totalStopwatch = Stopwatch.StartNew();
 
             Build build = await System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
-                    return Serialization.Read(filePath, progress.Progress);
+                    return Serialization.Read(filePath, progress.Progress, ReaderSettings.Default);
                 }
                 catch (Exception ex)
                 {
@@ -473,6 +588,7 @@ namespace StructuredLogViewer
                     return GetErrorBuild(filePath, ex.ToString());
                 }
             });
+
             var openTime = stopwatch.Elapsed;
             stopwatch.Restart();
 
@@ -487,19 +603,86 @@ namespace StructuredLogViewer
                 progress.ProgressText = "Analyzing " + filePath + "...";
                 await QueueAnalyzeBuild(build);
             }
+
             var analyzingTime = stopwatch.Elapsed;
 
+            progress.ProgressText = "Indexing...";
             stopwatch.Restart();
+            await System.Threading.Tasks.Task.Run(() => build.SearchIndex = new SearchIndex(build));
+            var indexingTime = stopwatch.Elapsed;
+
+            progress.ProgressText = "Reading embedded files...";
+            TimeSpan embeddedFilesTime = TimeSpan.Zero;
+            await System.Threading.Tasks.Task.Run(() =>
+            {
+                stopwatch.Restart();
+                var sourceFiles = build.SourceFiles;
+                if (sourceFiles != null &&
+                    sourceFiles.FirstOrDefault(s =>
+                        s.FullPath.EndsWith("project.assets.json", StringComparison.OrdinalIgnoreCase)) != null)
+                {
+                    AddNuGetNode(build);
+                }
+
+                embeddedFilesTime = stopwatch.Elapsed;
+            });
+
             progress.ProgressText = "Rendering tree...";
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded); // let the progress message be rendered before we block the UI again
-            var renderTime = stopwatch.Elapsed;
 
             DisplayBuild(build);
 
             if (currentBuild != null)
             {
-                currentBuild.UpdateBreadcrumb($"Opening: {Math.Round(openTime.TotalSeconds, 3)}s, Analyzing: {Math.Round(analyzingTime.TotalSeconds, 3)}s");
+                long allocatedAfter = AppDomain.CurrentDomain.MonitoringTotalAllocatedMemorySize;
+                long allocated = allocatedAfter - allocatedBefore;
+                string readingFilesText = TextUtilities.DisplayDuration(embeddedFilesTime);
+
+                string text = $"Total opening time: {TextUtilities.DisplayDuration(totalStopwatch.Elapsed)}";
+
+                text += $", Loading: {TextUtilities.DisplayDuration(openTime)}";
+                text += $", Analyzing: {TextUtilities.DisplayDuration(analyzingTime)}";
+                text += $", Indexing: {TextUtilities.DisplayDuration(indexingTime)}";
+                if (!string.IsNullOrEmpty(readingFilesText))
+                {
+                    text += $", Reading files: {readingFilesText}";
+                }
+
+                text += $", Allocated: {allocated:n0} bytes";
+
+                if (currentBuild.Build.SearchIndex is { } index)
+                {
+                    text += $", Nodes: {index.NodeCount:n0}";
+                    text += $", Strings: {index.Strings.Length:n0}";
+                }
+
+                currentBuild.UpdateBreadcrumb(text);
+                currentBuild.Build.AddChild(new Message { Text = text });
             }
+        }
+
+        private void AddNuGetNode(Build build)
+        {
+            var nuget = new Package { Name = "NuGet" };
+            var note = new Note { Text = @"This binlog contains project.assets.json files.
+You can search for NuGet packages (by name or version), dependencies (direct or transitive)
+and files coming from NuGet packages:
+
+List MyProject.csproj dependencies:
+    $nuget project(MyProject.csproj)
+
+Search for Package.Name in both dependencies and resolved packages:
+    $nuget project(MyProject.csproj) Package.Name
+
+Search for a file coming from a NuGet package:
+    $nuget project(MyProject.csproj) File.dll
+
+Search for a specific version or version range:
+    $nuget project(.csproj) 13.0.3
+
+Use project(.) or project(.csproj) to search all projects (slow)." };
+            nuget.AddChild(note);
+            build.AddChild(nuget);
         }
 
         private async System.Threading.Tasks.Task QueueAnalyzeBuild(Build build)
@@ -509,6 +692,8 @@ namespace StructuredLogViewer
                 try
                 {
                     BuildAnalyzer.AnalyzeBuild(build);
+                    build.SearchExtensions.Add(new SecretsSearch(build));
+                    build.SearchExtensions.Add(new NuGetSearch(build));
                 }
                 catch (Exception ex)
                 {
@@ -653,31 +838,122 @@ namespace StructuredLogViewer
             OpenLogFile(logFilePath);
         }
 
+        private async System.Threading.Tasks.Task RedactSecrets()
+        {
+            RedactInputControl redactInputControl = new RedactInputControl(GetSaveAsDestination);
+            redactInputControl.Owner = this;
+
+            if (redactInputControl.ShowDialog() != true)
+            {
+                return;
+            }
+
+            List<string> stringsToRedact =
+                new(redactInputControl.SecretsBlock?
+                        .Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => s.Trim())
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                    ?? new string[] { });
+
+            if (
+                !stringsToRedact.Any() &&
+                !redactInputControl.RedactUsername &&
+                !redactInputControl.RedactCommonCredentials)
+            {
+                MessageBox.Show("No secrets to redact - no action will be performed");
+                return;
+            }
+
+            var progress = new BuildProgress();
+            progress.Progress.Updated += update =>
+            {
+                Dispatcher.InvokeAsync(() =>
+                {
+                    progress.Value = update.Ratio;
+                }, DispatcherPriority.Background);
+            };
+            progress.ProgressText = "Performing the log redaction ...";
+            SetContent(progress);
+
+            string error = await System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    BinlogRedactorOptions redactorOptions = new BinlogRedactorOptions(logFilePath)
+                    {
+                        OutputFileName = redactInputControl.DestinationFile,
+                        ProcessEmbeddedFiles = redactInputControl.RedactEmbeddedFiles,
+                        AutodetectUsername = redactInputControl.RedactUsername,
+                        AutodetectCommonPatterns = redactInputControl.RedactCommonCredentials,
+                        IdentifyReplacemenets = redactInputControl.DistinguishSecretsReplacements,
+                        TokensToRedact = stringsToRedact.ToArray(),
+                    };
+
+                    BinlogRedactor.RedactSecrets(
+                        redactorOptions,
+                        progress.Progress);
+                }
+                catch (Exception e)
+                {
+                    return e.ToString();
+                }
+
+                return null;
+            });
+
+            if (!string.IsNullOrEmpty(error))
+            {
+                MessageBox.Show($"Redaction failed:{Environment.NewLine}{error}");
+                SetContent(currentBuild);
+            }
+            else if (string.IsNullOrEmpty(redactInputControl.DestinationFile))
+            {
+                // Reload
+                OpenLogFile(logFilePath);
+            }
+            else
+            {
+                SetContent(currentBuild);
+                AnnounceFileSaved(redactInputControl.DestinationFile);
+            }
+        }
+
+        private string GetSaveAsDestination()
+        {
+            string currentFilePath = currentBuild.LogFilePath;
+
+            var saveFileDialog = new SaveFileDialog();
+            saveFileDialog.Filter = currentFilePath != null && currentFilePath.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase) ? Serialization.BinlogFileDialogFilter : Serialization.FileDialogFilter;
+            saveFileDialog.Title = "Save log file as";
+            saveFileDialog.CheckFileExists = false;
+            saveFileDialog.OverwritePrompt = true;
+            saveFileDialog.ValidateNames = true;
+            var result = saveFileDialog.ShowDialog(this);
+
+            return result == true ? saveFileDialog.FileName : null;
+        }
+
+        private void AnnounceFileSaved(string filePath)
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                currentBuild.UpdateBreadcrumb(new Message { Text = $"Saved {filePath}" });
+            });
+            SettingsService.AddRecentLogFile(filePath);
+        }
+
         private void SaveAs()
         {
             if (currentBuild != null)
             {
                 string currentFilePath = currentBuild.LogFilePath;
-
-                var saveFileDialog = new SaveFileDialog();
-                saveFileDialog.Filter = currentFilePath != null && currentFilePath.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase) ? Serialization.BinlogFileDialogFilter : Serialization.FileDialogFilter;
-                saveFileDialog.Title = "Save log file as";
-                saveFileDialog.CheckFileExists = false;
-                saveFileDialog.OverwritePrompt = true;
-                saveFileDialog.ValidateNames = true;
-                var result = saveFileDialog.ShowDialog(this);
-                if (result != true)
-                {
-                    return;
-                }
-
-                string newFilePath = saveFileDialog.FileName;
+                string newFilePath = GetSaveAsDestination();
                 if (string.IsNullOrEmpty(newFilePath) || string.Equals(currentFilePath, newFilePath, StringComparison.OrdinalIgnoreCase))
                 {
                     return;
                 }
 
-                logFilePath = saveFileDialog.FileName;
+                logFilePath = newFilePath;
 
                 lock (inProgressOperationLock)
                 {
@@ -696,11 +972,7 @@ namespace StructuredLogViewer
 
                             currentBuild.Build.LogFilePath = logFilePath;
 
-                            Dispatcher.InvokeAsync(() =>
-                            {
-                                currentBuild.UpdateBreadcrumb(new Message { Text = $"Saved {logFilePath}" });
-                            });
-                            SettingsService.AddRecentLogFile(logFilePath);
+                            AnnounceFileSaved(logFilePath);
                         }
                         catch
                         {
@@ -712,6 +984,14 @@ namespace StructuredLogViewer
 
         private object inProgressOperationLock = new object();
         public System.Threading.Tasks.Task InProgressTask = System.Threading.Tasks.Task.CompletedTask;
+
+        private void Window_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.F && e.KeyboardDevice.Modifiers == ModifierKeys.Control)
+            {
+                FocusSearch();
+            }
+        }
 
         private void Window_KeyUp(object sender, KeyEventArgs e)
         {
@@ -731,9 +1011,9 @@ namespace StructuredLogViewer
             {
                 OpenLogFile();
             }
-            else if (e.Key == Key.F && e.KeyboardDevice.Modifiers == ModifierKeys.Control)
+            else if (e.Key == Key.R && e.KeyboardDevice.Modifiers == ModifierKeys.Control)
             {
-                FocusSearch();
+                RedactSecrets().Ignore();
             }
             else if (e.Key == Key.C && e.KeyboardDevice.Modifiers == ModifierKeys.Control)
             {
@@ -808,6 +1088,11 @@ namespace StructuredLogViewer
             SaveAs();
         }
 
+        private void RedactSecrets_Click(object sender, RoutedEventArgs e)
+        {
+            RedactSecrets().Ignore();
+        }
+
         private void HelpLink_Click(object sender, RoutedEventArgs e)
         {
             Process.Start(new ProcessStartInfo("https://github.com/KirillOsenkov/MSBuildStructuredLog") { UseShellExecute = true });
@@ -816,6 +1101,11 @@ namespace StructuredLogViewer
         private void HelpLink2_Click(object sender, RoutedEventArgs e)
         {
             Process.Start(new ProcessStartInfo("https://msbuildlog.com") { UseShellExecute = true });
+        }
+
+        private void HelpLink3_Click(object sender, RoutedEventArgs e)
+        {
+            Process.Start(new ProcessStartInfo("https://github.com/KirillOsenkov/MSBuildStructuredLog/wiki/Search-Syntax") { UseShellExecute = true });
         }
 
         private void HelpAbout_Click(object sender, RoutedEventArgs e)
@@ -831,6 +1121,60 @@ namespace StructuredLogViewer
         private void StartPage_Click(object sender, RoutedEventArgs e)
         {
             DisplayWelcomeScreen();
+        }
+
+        private void CloseException_Click(object sender, RoutedEventArgs e)
+        {
+            ExceptionText = null;
+        }
+
+        private void ExceptionText_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            Process.Start(ErrorReporting.LogFilePath);
+        }
+
+        private string currentExceptionText;
+        public string ExceptionText
+        {
+            get => currentExceptionText;
+            set
+            {
+                if (currentExceptionText == value)
+                {
+                    return;
+                }
+
+                currentExceptionText = value;
+                UIInvoke(() => UpdateExceptionVisibility());
+            }
+        }
+
+        private void UIInvoke(Action action)
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    action();
+                });
+            }
+            else
+            {
+                action();
+            }
+        }
+
+        private void UpdateExceptionVisibility()
+        {
+            if (!string.IsNullOrEmpty(currentExceptionText))
+            {
+                exceptionText.Text = currentExceptionText;
+                exceptionPanel.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                exceptionPanel.Visibility = Visibility.Hidden;
+            }
         }
     }
 }

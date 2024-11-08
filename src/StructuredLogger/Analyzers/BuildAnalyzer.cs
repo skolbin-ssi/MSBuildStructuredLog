@@ -21,6 +21,7 @@ namespace Microsoft.Build.Logging.StructuredLogger
         private readonly Build build;
         private readonly DoubleWritesAnalyzer doubleWritesAnalyzer;
         private readonly FileCopyMap fileCopyMap;
+        private readonly ProjectReferenceGraph projectReferenceGraph;
         private readonly ResolveAssemblyReferenceAnalyzer resolveAssemblyReferenceAnalyzer;
         private readonly CppAnalyzer cppAnalyzer;
         private readonly Dictionary<string, TaskStatistic> taskDurations = new();
@@ -35,6 +36,15 @@ namespace Microsoft.Build.Logging.StructuredLogger
             resolveAssemblyReferenceAnalyzer = new ResolveAssemblyReferenceAnalyzer();
             cppAnalyzer = new CppAnalyzer();
             fileCopyMap = new FileCopyMap();
+            projectReferenceGraph = new ProjectReferenceGraph(build);
+            build.FileCopyMap = fileCopyMap;
+            build.ProjectReferenceGraph = projectReferenceGraph;
+            build.SearchExtensions.Add(fileCopyMap);
+
+            if (build.EvaluationFolder != null)
+            {
+                build.SearchExtensions.Add(projectReferenceGraph);
+            }
         }
 
         public static void AnalyzeBuild(Build build)
@@ -55,7 +65,6 @@ namespace Microsoft.Build.Logging.StructuredLogger
             int index = 0;
             build.VisitAllChildren<TreeNode>(t =>
             {
-                t.Seal();
                 if (t is TimedNode timedNode)
                 {
                     timedNode.Index = index;
@@ -68,7 +77,23 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         private void Analyze()
         {
+            var evaluation = build.EvaluationFolder;
+            if (evaluation != null)
+            {
+                evaluation.SortChildren();
+                AnalyzeEvaluation(evaluation);
+            }
+
+            var environment = build.EnvironmentFolder;
+            if (environment != null)
+            {
+                AnalyzeEnvironment(environment);
+            }
+
             Visit(build);
+
+            PostAnalyzeBuild(build);
+
             build.Statistics.TimedNodeCount = index;
             foreach (var property in typeof(Strings)
                 .GetProperties()
@@ -81,6 +106,13 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         private void Visit(TreeNode node)
         {
+            // items only have metadata, nothing to analyze.
+            // they also constitute the majority of nodes
+            if (node is AddItem or RemoveItem or Item)
+            {
+                return;
+            }
+
             ProcessBeforeChildrenVisited(node);
 
             if (node.HasChildren)
@@ -97,16 +129,17 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
 
             ProcessAfterChildrenVisited(node);
-            node.Seal();
         }
 
         private void ProcessBeforeChildrenVisited(TreeNode node)
         {
-            if (node is TimedNode timedNode)
+            if (node is not TimedNode timedNode)
             {
-                timedNode.Index = index;
-                index++;
+                return;
             }
+
+            timedNode.Index = index;
+            index++;
 
             if (node is Task task)
             {
@@ -116,22 +149,13 @@ namespace Microsoft.Build.Logging.StructuredLogger
             {
                 AnalyzeTarget(target);
             }
-            else if (node is Message message)
-            {
-                AnalyzeMessage(message);
-            }
-            else if (node is NamedNode folder)
-            {
-                if (folder.Name == Strings.Evaluation)
-                {
-                    folder.SortChildren();
+        }
 
-                    AnalyzeEvaluation(folder);
-                }
-                else if (folder.Name == Strings.Environment)
-                {
-                    AnalyzeEnvironment(folder);
-                }
+        private void ProcessAfterChildrenVisited(TreeNode node)
+        {
+            if (node is Project project)
+            {
+                PostAnalyzeProject(project);
             }
         }
 
@@ -167,26 +191,6 @@ namespace Microsoft.Build.Logging.StructuredLogger
             }
         }
 
-        private void AnalyzeMessage(Message message)
-        {
-            if (message.Text != null && Strings.BuildingWithToolsVersionPrefix != null && Strings.BuildingWithToolsVersionPrefix.IsMatch(message.Text))
-            {
-                message.IsLowRelevance = true;
-            }
-        }
-
-        private void ProcessAfterChildrenVisited(TreeNode node)
-        {
-            if (node is Project project)
-            {
-                PostAnalyzeProject(project);
-            }
-            else if (node is Build build)
-            {
-                PostAnalyzeBuild(build);
-            }
-        }
-
         private void PostAnalyzeBuild(Build build)
         {
             string Intern(string text)
@@ -199,7 +203,10 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
             if (!build.Succeeded)
             {
-                build.AddChild(new Error { Text = Intern("Build failed.") });
+                build.AddChild(new BuildError
+                {
+                    Text = Intern("Build failed.")
+                });
             }
             else
             {
@@ -232,18 +239,18 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 var top10Tasks = build.GetOrCreateNodeWithName<Folder>(folderName);
                 foreach (var kvp in durations)
                 {
-                    var taskItem = new Item
+                    var taskItem = new SearchableItem
                     {
-                        Name = Intern(kvp.Key),
-                        Text = Intern($"{TextUtilities.DisplayDuration(kvp.Value.Duration)}, {kvp.Value.Count} calls.")
+                        Text = Intern(kvp.Key) + " = " + Intern($"{TextUtilities.DisplayDuration(kvp.Value.Duration)}, {kvp.Value.Count} calls."),
+                        SearchText = $@"$task ""{kvp.Key}""",
                     };
                     var childNodes = kvp.Value.ChildNodes.OrderByDescending(kv => kv.Value.Duration).Take(10);
                     foreach (var durationNodes in childNodes)
                     {
-                        taskItem.AddChild(new Item
+                        taskItem.AddChild(new SearchableItem
                         {
-                            Name = Intern(durationNodes.Key),
-                            Text = Intern($"{TextUtilities.DisplayDuration(durationNodes.Value.Duration)}, {durationNodes.Value.Count} calls.")
+                            Text = Intern(durationNodes.Key) + " = " + Intern($"{TextUtilities.DisplayDuration(durationNodes.Value.Duration)}, {durationNodes.Value.Count} calls."),
+                            SearchText = $@"$target ""{durationNodes.Key}""",
                         });
                     }
                     top10Tasks.AddChild(taskItem);
@@ -362,8 +369,33 @@ namespace Microsoft.Build.Logging.StructuredLogger
                 cppAnalyzer.AnalyzeTask(cppTask);
             }
 
-            // fileCopyMap.AnalyzeTask(task);
+            fileCopyMap.AnalyzeTask(task);
             doubleWritesAnalyzer.AnalyzeTask(task);
+
+            CollapseMessagesToSubfolder(task);
+        }
+
+        private void CollapseMessagesToSubfolder(Task task)
+        {
+            var messages = task.Children.OfType<Message>().ToArray();
+            if (messages.Length <= 10)
+            {
+                return;
+            }
+
+            for (int i = task.Children.Count - 1; i >= 0; i--)
+            {
+                if (task.Children[i] is Message)
+                {
+                    task.Children.RemoveAt(i);
+                }
+            }
+
+            var subfolder = task.GetOrCreateNodeWithName<Folder>(Strings.Messages);
+            foreach (var message in messages)
+            {
+                subfolder.AddChild(message);
+            }
         }
 
         private void UpdateTaskDurations(Task task)
@@ -398,6 +430,11 @@ namespace Microsoft.Build.Logging.StructuredLogger
         {
             MarkAsLowRelevanceIfNeeded(target);
             AddDependsOnTargets(target);
+
+            if (target.Name == "_CopyOutOfDateSourceItemsToOutputDirectory" && target.Skipped)
+            {
+                fileCopyMap.AnalyzeTarget(target);
+            }
         }
 
         private static void AddDependsOnTargets(Target target)
@@ -416,15 +453,18 @@ namespace Microsoft.Build.Logging.StructuredLogger
 
         private void MarkAsLowRelevanceIfNeeded(Target target)
         {
-            if (!target.HasChildren || target.Children.All(c => c is Message))
+            if (!target.HasChildren)
             {
                 target.IsLowRelevance = true;
-                if (target.HasChildren)
+                return;
+            }
+
+            if (target.Children.All(c => c is Message))
+            {
+                target.IsLowRelevance = true;
+                foreach (var child in target.Children.OfType<Message>())
                 {
-                    foreach (var child in target.Children.OfType<Message>())
-                    {
-                        child.IsLowRelevance = true;
-                    }
+                    child.IsLowRelevance = true;
                 }
             }
         }

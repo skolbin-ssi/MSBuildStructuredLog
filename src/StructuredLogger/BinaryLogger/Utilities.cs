@@ -1,22 +1,19 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using Microsoft.Build.Framework;
-using Microsoft.Build.Logging.StructuredLogger;
 
 namespace Microsoft.Build.BackEnd
 {
     internal class ItemGroupLoggingHelper
     {
-        internal static FieldInfo LineNumberField = Reflector.BuildMessageEventArgs_lineNumber;
-        internal static FieldInfo ColumnNumberField = Reflector.BuildMessageEventArgs_columnNumber;
-
         internal static TaskParameterEventArgs CreateTaskParameterEventArgs(
             BuildEventContext buildEventContext,
             TaskParameterMessageKind messageKind,
+            string parameterName,
+            string propertyName,
             string itemType,
             IList items,
             bool logItemMetadata,
@@ -24,21 +21,18 @@ namespace Microsoft.Build.BackEnd
             int line,
             int column)
         {
-            var args = new TaskParameterEventArgs(
+            var args = new TaskParameterEventArgs2(
                 messageKind,
+                parameterName,
+                propertyName,
                 itemType,
                 items,
                 logItemMetadata,
                 timestamp);
             args.BuildEventContext = buildEventContext;
 
-            // sigh this is terrible for perf
-            LineNumberField.SetValue(args, line);
-            ColumnNumberField.SetValue(args, column);
-
-            // Should probably make these public
-            // args.LineNumber = line;
-            // args.ColumnNumber = column;
+            args.LineNumber = line;
+            args.ColumnNumber = column;
             return args;
         }
     }
